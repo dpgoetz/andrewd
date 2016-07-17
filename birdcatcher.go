@@ -187,7 +187,7 @@ func (bc *BirdCatcher) updateDeviceData(allReconData []*ReconData) {
 
 	db, err := bc.getDb()
 	if err != nil {
-		bc.logger.Err(fmt.Sprint("Could not getDb: %v", err))
+		bc.logger.Err(fmt.Sprintf("Could not getDb: %v", err))
 		return
 	}
 	for _, rd := range allReconData {

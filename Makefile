@@ -21,6 +21,6 @@ develop: all
 	ln -f -s `pwd`/bin/* -t /usr/local/bin/
 
 test:
-	@test -z "(shell find . -name '*.go' | xargs gofmt -l)" || (echo "Need to run 'go fmt ./...'"; exit 1)
+	@test -z "$(shell find . -name '*.go' | xargs gofmt -l)" || (echo "Need to run 'go fmt ./...'"; exit 1)
 	go vet ./...
 	go test ./...
