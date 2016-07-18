@@ -57,9 +57,9 @@ func TestGetReconUmounted(t *testing.T) {
 	doneChan := make(chan bool)
 
 	bc, _ := GetBirdCatcher()
+	bc.getDbOutofSwift()
 
 	go bc.reconGetUnmounted(host, port, dataChan, doneChan)
-	fmt.Println("rtrtrtrt")
 	rd := <-dataChan
 	require.Equal(t, rd.Device, "sdb1")
 	<-doneChan
