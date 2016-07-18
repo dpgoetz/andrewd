@@ -76,11 +76,13 @@ func (bc *BirdCatcher) doHealthCheck(ip string, port int) (ok bool) {
 
 func (bc *BirdCatcher) reconGetUnmounted(ip string, port int,
 	dataChan chan *ReconData,
-	doneChan chan bool) (ipDown bool) {
+	doneChan chan ipPort) (ipDown bool) {
+	ipPortCalling := ipPort{ip: ip, port: port, up: false}
 
 	defer func() {
-		doneChan <- true
+		doneChan <- ipPortCalling
 	}()
+
 	serverUrl := fmt.Sprintf("http://%s:%d/recon/unmounted", ip, port)
 
 	fmt.Println(serverUrl)
@@ -89,63 +91,44 @@ func (bc *BirdCatcher) reconGetUnmounted(ip string, port int,
 	if err != nil {
 		bc.logger.Err(fmt.Sprintf("Could not create request to %s: %v",
 			serverUrl, err))
-		return false
+		return
 	}
 	resp, err := client.Do(req)
 	if err != nil {
 		bc.logger.Err(fmt.Sprintf("Could not do request to %s: %v",
 			serverUrl, err))
-		return true
+		return
 	}
 	data, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		bc.logger.Err(fmt.Sprintf("Could not read resp to %s: %v",
 			serverUrl, err))
-		return false
+		return
 	}
 	var serverReconData []*ReconData
 	if err := json.Unmarshal(data, &serverReconData); err != nil {
 		bc.logger.Err(fmt.Sprintf("Could not parse json from %s: %v",
 			serverUrl, err))
-		return false
+		return
 	}
 
+	ipPortCalling.up = true
 	for _, rData := range serverReconData {
 		rData.ip = ip
 		rData.port = port
 		dataChan <- rData
 	}
-	return false
-
 }
 
-func (bc *BirdCatcher) GatherReconData() (devs []*ReconData, missingDevs []*hummingbird.Device) {
-
-	type sKey struct {
-		ip   string
-		port int
-	}
-	allWeightedDevs := make(map[string]*hummingbird.Device)
-	allServers := make(map[sKey]bool)
-
-	for _, dev := range bc.oring.AllDevices() {
-		if dev.Weight > 0 {
-			allWeightedDevs[fmt.Sprintf(
-				"%s:%d/%s", dev.Ip, dev.Port, dev.Device)] = &dev
-			key := sKey{ip: dev.Ip, port: dev.Port}
-			if _, ok := allServers[key]; !ok {
-				allServers[key] = true
-			}
-		}
-	}
+func (bc *BirdCatcher) GatherReconData(servers []*ipPort) (devs []*ReconData) {
 
 	var unmountedReconData []*ReconData
 	serverCount := 0
 	dataChan := make(chan *ReconData)
 	doneChan := make(chan bool)
 
-	for key, _ := range allServers {
-		go bc.reconGetUnmounted(key.ip, key.port, dataChan, doneChan)
+	for s := range servers {
+		go bc.reconGetUnmounted(s.ip, s.port, dataChan, doneChan)
 		serverCount += 1
 	}
 
@@ -153,27 +136,15 @@ func (bc *BirdCatcher) GatherReconData() (devs []*ReconData, missingDevs []*humm
 		select {
 		case rd := <-dataChan:
 			unmountedReconData = append(unmountedReconData, rd)
-			delete(allWeightedDevs,
-				fmt.Sprintf("%s:%d/%s", rd.ip, rd.port, rd.Device))
 		case <-doneChan:
 			serverCount -= 1
 		}
 	}
 
-	for _, wDev := range allWeightedDevs {
-		missingDevs = append(missingDevs, wDev)
-		/*
-			errs = append(errs,
-				errors.New(fmt.Sprintf("%s:%d/%s was not found in recon",
-					wDev.Ip, wDev.Port, wDev.Device)))
-		*/
-	}
-	return unmountedReconData, missingDevs
+	return unmountedReconData
 }
 
 func (bc *BirdCatcher) getDb() (*sql.DB, error) {
-	// this will later download the DB from out of the cluster but
-	// for now will just load one up on /tmp/birdcatcher.db
 	db, err := sql.Open("sqlite3", filepath.Join(bc.workingDir, DbName))
 	if err != nil {
 		fmt.Println("err on open: ", err)
@@ -220,6 +191,8 @@ func (bc *BirdCatcher) getDb() (*sql.DB, error) {
 	return db, nil
 }
 
+/*
+
 func (bc *BirdCatcher) updateDeviceData(allReconData []*ReconData) {
 
 	db, err := bc.getDb()
@@ -234,8 +207,8 @@ func (bc *BirdCatcher) updateDeviceData(allReconData []*ReconData) {
 			if rd.Mounted {
 				newMounted = true
 			}
-		*/
-		row := db.QueryRow("SELECT Mounted FROM Device WHERE "+
+*/
+/*		row := db.QueryRow("SELECT Mounted FROM Device WHERE "+
 			"Ip=? AND Port=? AND Device=?", rd.ip, rd.port, rd.Device)
 		if row == nil {
 			// do insert
@@ -263,105 +236,75 @@ func (bc *BirdCatcher) updateDeviceData(allReconData []*ReconData) {
 	}
 	return
 }
+*/
 
-type serverTup struct {
+type ipPort struct {
 	ip   string
 	port int
+	up   bool
 }
 
-func (bc *BirdCatcher) updateDbWithRing() error {
+func (bc *BirdCatcher) updateDb() error {
 	db, err := bd.getDb()
 	if err != nil {
 		return err
 	}
 	allRingDevices := make(map[string]*hummingbird.Device)
+	unmountedDevices := make(map[string]bool)
 	allWeightedServers := make(map[sKey]bool)
 	for _, dev := range bc.oring.AllDevices() {
 		allRingDevices[fmt.Sprintf("%s:%d/%s", dev.Ip, dev.Port, dev.Device)] = &dev
 
 		if dev.Weight > 0 {
-			key := serverTup{ip: dev.Ip, port: dev.Port}
+			key := ipPort{ip: dev.Ip, port: dev.Port}
 			if _, ok := allWeightedServers[key]; !ok {
 				allWeightedServers[key] = true
 			}
 		}
 	}
-	rows := db.Query("SELECT Ip, Port, Device, Weight FROM Device")
+
+	for _, rData := range bc.GatherReconData(allWeightedServers) {
+		unmountedDevices[fmt.Sprintf(
+			"%s:%d/%s", rData.ip, rData.port, rData.Device)] = true
+	}
+
+	rows := db.Query("SELECT Ip, Port, Device, Weight, Mounted FROM Device")
 	var qryErrors []error
 	for rows.Next() {
 		var ip, device string
-		var port int
+		var port, mounted int
 		var weight float64
 
 		if err := rows.Scan(&ip, &port, &device, &weight); err != nil {
 			qryErrors = append(qryErrors, err)
 		} else {
-			ringWeight, found := allRingDevices[fmt.Sprintf("%s:%d/%s", ip, port, device)]
-			if !found {
+			dKey := fmt.Sprintf("%s:%d/%s", ip, port, device)
+			ringWeight, inRing := allRingDevices[dKey]
+			_, isUnmounted := unmountedDevices[dKey]
+			if !inRing {
 				//TODO- handle errors
 				_, err = db.Exec("UPDATE Device SET InRing=false "+
 					"WHERE Ip=? AND Port=? AND Device=?", ip, port, device)
-			} else if ringWeight != weight {
-				_, err = db.Exec("UPDATE Device SET Weight=? "+
-					"WHERE Ip=? AND Port=? AND Device=?",
-					ringWeight, ip, port, device)
+			} else {
+				if ringWeight != weight || mounted == isUnmounted {
+					_, err = db.Exec("UPDATE Device SET "+
+						"Weight=? Mounted=? "+
+						"WHERE Ip=? AND Port=? AND Device=?",
+						ringWeight, !isUnmounted, ip, port, device)
+				}
 			}
-			delete(allRingDevices, fmt.Sprintf("%s:%d/%s", ip, port, device))
+			delete(allRingDevices, dKey)
 		}
 	}
 	for _, rDev := range allRingDevices {
+		dKey := fmt.Sprintf("%s:%d/%s", rDev.Ip, rDev.Port, rDev.Device)
+		_, isUnmounted := unmountedDevices[dKey]
 		_, err = db.Exec("INSERT INTO Device "+
-			"(Ip, Port, Device, InRing, Weight) VALUES"+
+			"(Ip, Port, Device, InRing, Weight, Mounted) VALUES"+
 			"(?,?,?,?,?)",
-			rDev.Ip, rDev.Port.rDev.Device, true, rDev.Weight)
+			rDev.Ip, rDev.Port.rDev.Device, true, rDev.Weight, !isUnmounted)
 
 	}
-	//TODO - now query all inRing wieghted servers in DB and compare the mountedness.
-	// just do a group by query for all the ip/ports then an up and set unmounted=1 for all the ones unmounted, and mounted=false for all the rest. the trigger will handle the updateing of LastUpdate
-	rows := db.Query(
-		"SELECT Ip, Port FROM Device WHERE Weight > 0 GROUP BY Ip, Port")
-	for rows.Next() {
-		var ip string
-		var port int
-		if err := rows.Scan(&ip, &port); err != nil {
-			qryErrors = append(qryErrors, err)
-		} else {
-
-		}
-		row := db.QueryRow("SELECT Weight FROM Device "+
-			"WHERE Ip=? AND Port=? AND Device=?", dev.Ip, dev.Port, dev.Device)
-
-		if row == nil {
-			_, err = db.Exec("INSERT INTO Device "+
-				"(Ip, Port, Device, Weight) VALUES (?,?,?,?)",
-				dev.Ip, dev.Port, dev.Device, dev.Weight)
-			if err != nil {
-				bc.logger.Err(fmt.Sprintf("Could not insert Device : %v", err))
-			}
-		} else {
-			var weight sql.NullFloat64
-			if err := row.Scan(&weight); err != nil {
-				if !weight.Valid || dev.Weight != weight.Float64 {
-					_, err = db.Exec("UPDATE Device SET Weight=? "+
-						"WHERE Ip=? AND Port=? AND Device=?",
-						dev.Weight, dev.Ip, dev.Port, dev.Device)
-
-				}
-
-			}
-
-		}
-
-		if dev.Weight > 0 {
-			allWeightedDevs[fmt.Sprintf(
-				"%s:%d/%s", dev.Ip, dev.Port, dev.Device)] = &dev
-			key := sKey{ip: dev.Ip, port: dev.Port}
-			if _, ok := allServers[key]; !ok {
-				allServers[key] = true
-			}
-		}
-	}
-
 }
 
 func (bc *BirdCatcher) Run() error {
@@ -377,7 +320,7 @@ func (bc *BirdCatcher) Run() error {
 	//
 	// remove any devices that have been unmounted > a week
 	// write a json object with results that can be used for monitoring
-	unmountedReconDevs, missingDevs := bc.GatherReconData()
+	bd.updateDb()
 
 }
 
