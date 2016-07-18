@@ -54,15 +54,16 @@ func TestGetReconUmounted(t *testing.T) {
 	host, ports, _ := net.SplitHostPort(u.Host)
 	port, _ := strconv.Atoi(ports)
 	dataChan := make(chan *ReconData)
-	doneChan := make(chan bool)
+	doneServersChan := make(chan ipPort)
 
 	bc, _ := GetBirdCatcher()
-	bc.getDbOutofSwift()
 
-	go bc.reconGetUnmounted(host, port, dataChan, doneChan)
+	go bc.reconGetUnmounted(host, port, dataChan, doneServersChan)
 	rd := <-dataChan
 	require.Equal(t, rd.Device, "sdb1")
-	<-doneChan
+	ipp := <-doneServersChan
+	require.Equal(t, ipp.ip, host)
+	require.Equal(t, ipp.up, true)
 	require.Equal(t, handlerRan, true)
 
 }
@@ -134,9 +135,33 @@ func TestGatherReconData(t *testing.T) {
 	bc, _ := GetBirdCatcher()
 	bc.oring = &fr
 
-	rds, _ := bc.GatherReconData()
+	rds, downServers := bc.gatherReconData([]ipPort{ipPort{ip: host, port: port}})
 	fmt.Println("asdfadsfsadf: ", rds[0])
 	require.Equal(t, len(rds), 1)
+	require.Equal(t, len(downServers), 0)
 	require.Equal(t, rds[0].Mounted, true)
 	require.Equal(t, rds[0].Device, "sdb1")
+}
+
+func TestGetRingData(t *testing.T) {
+	t.Parallel()
+	fr := FakeRing{}
+
+	fr.Devs = append(fr.Devs,
+		hummingbird.Device{Id: 1, Device: "sdb1", Ip: "1.2", Port: 1, Weight: 1})
+	fr.Devs = append(fr.Devs,
+		hummingbird.Device{Id: 2, Device: "sdb2", Ip: "1.2", Port: 1, Weight: 1})
+	fr.Devs = append(fr.Devs,
+		hummingbird.Device{Id: 2, Device: "sdb1", Ip: "1.2", Port: 2, Weight: 1})
+	fr.Devs = append(fr.Devs,
+		hummingbird.Device{Id: 2, Device: "sdb1", Ip: "1.2", Port: 3, Weight: 0})
+
+	bc, _ := GetBirdCatcher()
+	bc.oring = &fr
+
+	allRingDevices, allWeightedServers := bc.getRingData()
+
+	require.Equal(t, len(allRingDevices), 4)
+	require.Equal(t, len(allWeightedServers), 2)
+
 }

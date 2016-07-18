@@ -76,11 +76,11 @@ func (bc *BirdCatcher) doHealthCheck(ip string, port int) (ok bool) {
 
 func (bc *BirdCatcher) reconGetUnmounted(ip string, port int,
 	dataChan chan *ReconData,
-	doneChan chan ipPort) (ipDown bool) {
-	ipPortCalling := ipPort{ip: ip, port: port, up: false}
+	doneServersChan chan ipPort) {
 
+	ipPortCalling := ipPort{ip: ip, port: port, up: false}
 	defer func() {
-		doneChan <- ipPortCalling
+		doneServersChan <- ipPortCalling
 	}()
 
 	serverUrl := fmt.Sprintf("http://%s:%d/recon/unmounted", ip, port)
@@ -120,28 +120,38 @@ func (bc *BirdCatcher) reconGetUnmounted(ip string, port int,
 	}
 }
 
-func (bc *BirdCatcher) GatherReconData(servers []*ipPort) (devs []*ReconData) {
+func (bc *BirdCatcher) deviceId(ip string, port int, device string) string {
+	return fmt.Sprintf("%s:%d/%s", ip, port, device)
+}
 
-	var unmountedReconData []*ReconData
+func (bc *BirdCatcher) serverId(ip string, port int) string {
+	return fmt.Sprintf("%s:%d", ip, port)
+}
+
+func (bc *BirdCatcher) gatherReconData(servers []ipPort) (devs []*ReconData, downServers map[string]ipPort) {
+
 	serverCount := 0
 	dataChan := make(chan *ReconData)
-	doneChan := make(chan bool)
+	doneServersChan := make(chan ipPort)
 
-	for s := range servers {
-		go bc.reconGetUnmounted(s.ip, s.port, dataChan, doneChan)
+	for _, s := range servers {
+		go bc.reconGetUnmounted(s.ip, s.port, dataChan, doneServersChan)
 		serverCount += 1
 	}
 
 	for serverCount > 0 {
 		select {
 		case rd := <-dataChan:
-			unmountedReconData = append(unmountedReconData, rd)
-		case <-doneChan:
+			devs = append(devs, rd)
+		case ipp := <-doneServersChan:
+			if ipp.up != true {
+				downServers[bc.serverId(ipp.ip, ipp.port)] = ipp
+			}
 			serverCount -= 1
 		}
 	}
 
-	return unmountedReconData
+	return devs, downServers
 }
 
 func (bc *BirdCatcher) getDb() (*sql.DB, error) {
@@ -158,14 +168,9 @@ func (bc *BirdCatcher) getDb() (*sql.DB, error) {
 		"LastUpdate DATETIME DEFAULT CURRENT_TIMESTAMP);" +
 
 		"CREATE TABLE IF NOT EXISTS DeviceLog (" +
-		"DeviceId INTEGER, Mounted INTEGER, " +
+		"DeviceId INTEGER, Mounted INTEGER, Reachable INTEGER " +
 		"CreateDate DATETIME DEFAULT CURRENT_TIMESTAMP, Notes VARCHAR(255), " +
 		"FOREIGN KEY (DeviceId) REFERENCES Device(id));" +
-
-		//		"CREATE TABLE IF NOT EXISTS Server (" +
-		//		"id INTEGER PRIMARY KEY, Ip VARCHAR(40), Port INTEGER, " +
-		//		"HealthCheck INTEGER, CreateDate DATETIME DEFAULT CURRENT_TIMESTAMP, " +
-		//		"LastUpdate DATETIME DEFAULT CURRENT_TIMESTAMP);" +
 
 		"CREATE TRIGGER IF NOT EXISTS DeviceLastUpdate " +
 		"AFTER UPDATE ON Device FOR EACH ROW " +
@@ -173,15 +178,10 @@ func (bc *BirdCatcher) getDb() (*sql.DB, error) {
 		"WHERE id = OLD.id AND " +
 		"(Mounted != OLD.Mounted OR Reachable != OLD.Reachable);END;" +
 
-		//		"CREATE TRIGGER IF NOT EXISTS ServerLastUpdate " +
-		//		"AFTER UPDATE ON Server FOR EACH ROW " +
-		//		"BEGIN UPDATE Server SET LastUpdate = CURRENT_TIMESTAMP " +
-		//		"WHERE id = OLD.id;END;" +
-
 		"CREATE TRIGGER IF NOT EXISTS DeviceLogger " +
 		"AFTER UPDATE ON Device FOR EACH ROW " +
-		"BEGIN INSERT INTO DeviceLog (DeviceId, Mounted) " +
-		"VALUES (OLD.id, OLD.Mounted);END;"
+		"BEGIN INSERT INTO DeviceLog (DeviceId, Mounted, Reachable) " +
+		"VALUES (OLD.id, OLD.Mounted, OLD.Reachable);END;"
 	//fmt.Println(sqlCreate)
 	_, err = db.Exec(sqlCreate)
 	if err != nil {
@@ -191,123 +191,115 @@ func (bc *BirdCatcher) getDb() (*sql.DB, error) {
 	return db, nil
 }
 
-/*
-
-func (bc *BirdCatcher) updateDeviceData(allReconData []*ReconData) {
-
-	db, err := bc.getDb()
-	if err != nil {
-		bc.logger.Err(fmt.Sprintf("Could not getDb: %v", err))
-		return
-	}
-	for _, rd := range allReconData {
-		fmt.Println("lalala", rd)
-		/*
-			newMounted := false
-			if rd.Mounted {
-				newMounted = true
-			}
-*/
-/*		row := db.QueryRow("SELECT Mounted FROM Device WHERE "+
-			"Ip=? AND Port=? AND Device=?", rd.ip, rd.port, rd.Device)
-		if row == nil {
-			// do insert
-			_, err = db.Exec("INSERT INTO Device "+
-				"(RingId, Ip, Port, Device, Mounted) VALUES (?,?,?,?,?)",
-				rd.dev.Id, rd.ip, rd.port, rd.Device, rd.Mounted)
-			if err != nil {
-				bc.logger.Err(fmt.Sprintf("Could not insert Device : %v", err))
-			}
-		} else {
-			var dbMounted sql.NullBool
-			if err := row.Scan(&dbMounted); err != nil {
-				if !dbMounted.Valid || rd.Mounted != dbMounted.Bool {
-					// do update
-					_, err = db.Exec("UPDATE Device SET Mounted=? "+
-						"WHERE Ip=? AND Port=? AND Device=?",
-						rd.Mounted, rd.ip, rd.port, rd.Device)
-					if err != nil {
-						bc.logger.Err(
-							fmt.Sprintf("Could not update Device: %v", err))
-					}
-				}
-			}
-		}
-	}
-	return
-}
-*/
-
 type ipPort struct {
 	ip   string
 	port int
 	up   bool
 }
 
-func (bc *BirdCatcher) updateDb() error {
-	db, err := bd.getDb()
-	if err != nil {
-		return err
-	}
+func (bc *BirdCatcher) getRingData() (map[string]*hummingbird.Device, []ipPort) {
+
 	allRingDevices := make(map[string]*hummingbird.Device)
-	unmountedDevices := make(map[string]bool)
-	allWeightedServers := make(map[sKey]bool)
+	var allWeightedServers []ipPort
+	weightedServers := make(map[string]bool)
 	for _, dev := range bc.oring.AllDevices() {
-		allRingDevices[fmt.Sprintf("%s:%d/%s", dev.Ip, dev.Port, dev.Device)] = &dev
+		allRingDevices[bc.deviceId(dev.Ip, dev.Port, dev.Device)] = &dev
 
 		if dev.Weight > 0 {
-			key := ipPort{ip: dev.Ip, port: dev.Port}
-			if _, ok := allWeightedServers[key]; !ok {
-				allWeightedServers[key] = true
+			if _, ok := weightedServers[bc.serverId(dev.Ip, dev.Port)]; !ok {
+				allWeightedServers =
+					append(allWeightedServers, ipPort{ip: dev.Ip, port: dev.Port})
+				weightedServers[bc.serverId(dev.Ip, dev.Port)] = true
 			}
 		}
 	}
+	return allRingDevices, allWeightedServers
 
-	for _, rData := range bc.GatherReconData(allWeightedServers) {
-		unmountedDevices[fmt.Sprintf(
-			"%s:%d/%s", rData.ip, rData.port, rData.Device)] = true
+}
+
+func (bc *BirdCatcher) updateDb() error {
+	db, err := bc.getDb()
+	if err != nil {
+		return err
 	}
+	allRingDevices, allWeightedServers := bc.getRingData()
+	unmountedDevices := make(map[string]bool)
 
-	rows := db.Query("SELECT Ip, Port, Device, Weight, Mounted FROM Device")
+	reconDevices, downServers := bc.gatherReconData(allWeightedServers)
+	for _, rData := range reconDevices {
+		unmountedDevices[bc.deviceId(rData.ip, rData.port, rData.Device)] = true
+	}
+	rows, _ := db.Query("SELECT Ip, Port, Device, Weight, Mounted FROM Device")
 	var qryErrors []error
 	for rows.Next() {
-		var ip, device string
+		var ip, device string // think i have to do that sql.null thing here
 		var port, mounted int
 		var weight float64
 
 		if err := rows.Scan(&ip, &port, &device, &weight); err != nil {
 			qryErrors = append(qryErrors, err)
 		} else {
-			dKey := fmt.Sprintf("%s:%d/%s", ip, port, device)
-			ringWeight, inRing := allRingDevices[dKey]
-			_, isUnmounted := unmountedDevices[dKey]
+			dKey := bc.deviceId(ip, port, device)
+			rDev, inRing := allRingDevices[dKey]
+			_, inUnmounted := unmountedDevices[dKey]
+			_, notReachable := downServers[bc.serverId(ip, port)]
 			if !inRing {
 				//TODO- handle errors
-				_, err = db.Exec("UPDATE Device SET InRing=false "+
+				_, err = db.Exec("UPDATE Device SET InRing=0 "+
 					"WHERE Ip=? AND Port=? AND Device=?", ip, port, device)
 			} else {
-				if ringWeight != weight || mounted == isUnmounted {
-					_, err = db.Exec("UPDATE Device SET "+
-						"Weight=? Mounted=? "+
-						"WHERE Ip=? AND Port=? AND Device=?",
-						ringWeight, !isUnmounted, ip, port, device)
+				if !notReachable {
+					if rDev.Weight != weight || mounted > 0 == inUnmounted {
+						_, err = db.Exec("UPDATE Device SET "+
+							"Weight=? Mounted=? "+
+							"WHERE Ip=? AND Port=? AND Device=?",
+							rDev.Weight, !inUnmounted, ip, port, device)
+					}
 				}
 			}
 			delete(allRingDevices, dKey)
 		}
 	}
-	for _, rDev := range allRingDevices {
-		dKey := fmt.Sprintf("%s:%d/%s", rDev.Ip, rDev.Port, rDev.Device)
-		_, isUnmounted := unmountedDevices[dKey]
-		_, err = db.Exec("INSERT INTO Device "+
-			"(Ip, Port, Device, InRing, Weight, Mounted) VALUES"+
-			"(?,?,?,?,?)",
-			rDev.Ip, rDev.Port.rDev.Device, true, rDev.Weight, !isUnmounted)
-
+	for _, ipp := range downServers {
+		_, err = db.Exec("UPDATE Device SET Reachable=0 "+
+			"WHERE Ip=? AND Port=? AND Device=?", ipp.ip, ipp.port)
 	}
+	for _, rDev := range allRingDevices {
+		dKey := bc.deviceId(rDev.Ip, rDev.Port, rDev.Device)
+		_, isUnmounted := unmountedDevices[dKey]
+		_, notReachable := downServers[bc.serverId(rDev.Ip, rDev.Port)]
+		_, err = db.Exec("INSERT INTO Device "+
+			"(Ip, Port, Device, InRing, Weight, Mounted, Reachable) VALUES"+
+			"(?,?,?,?,?)",
+			rDev.Ip, rDev.Port, rDev.Device,
+			true, rDev.Weight, !isUnmounted, !notReachable)
+	}
+	return nil
 }
 
-func (bc *BirdCatcher) Run() error {
+/*
+func (bc *BirdCatcher) updateRing() error {
+	db, err := bc.getDb()
+	if err != nil {
+		return err
+	}
+	rows, _ := db.Query("SELECT Ip, Port, Device, Weight, Mounted FROM Device")
+	var qryErrors []error
+	for rows.Next() {
+		var ip, device string // think i have to do that sql.null thing here
+		var port, mounted int
+		var weight float64
+
+		if err := rows.Scan(&ip, &port, &device, &weight); err != nil {
+			qryErrors = append(qryErrors, err)
+		} else {
+		}
+	}
+	return nil
+}
+*/
+
+func (bc *BirdCatcher) Run() {
 	// Get all devices in ring.
 	// update database with new ring- set weights, set not NotInRing anymore, add new devices
 	// for each server in DB call recon. update database as walking through.
@@ -320,7 +312,8 @@ func (bc *BirdCatcher) Run() error {
 	//
 	// remove any devices that have been unmounted > a week
 	// write a json object with results that can be used for monitoring
-	bd.updateDb()
+	bc.updateDb()
+	//bc.updateRing()
 
 }
 
