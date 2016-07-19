@@ -42,8 +42,6 @@ type ReconData struct {
 	dev     hummingbird.Device
 }
 
-var AccountName = ".admin"    //"AUTH_dfg"
-var DbContainerName = "db"    //"AUTH_dfg"
 var DbName = "birdcatcher.db" //"AUTH_dfg"
 
 // TODO: just make these public in hbird somwhere
@@ -133,6 +131,7 @@ func (bc *BirdCatcher) gatherReconData(servers []ipPort) (devs []*ReconData, dow
 	serverCount := 0
 	dataChan := make(chan *ReconData)
 	doneServersChan := make(chan ipPort)
+	downServers = make(map[string]ipPort)
 
 	for _, s := range servers {
 		go bc.reconGetUnmounted(s.ip, s.port, dataChan, doneServersChan)
@@ -145,6 +144,7 @@ func (bc *BirdCatcher) gatherReconData(servers []ipPort) (devs []*ReconData, dow
 			devs = append(devs, rd)
 		case ipp := <-doneServersChan:
 			if ipp.up != true {
+				fmt.Println("poooooo: ", downServers)
 				downServers[bc.serverId(ipp.ip, ipp.port)] = ipp
 			}
 			serverCount -= 1
@@ -160,10 +160,15 @@ func (bc *BirdCatcher) getDb() (*sql.DB, error) {
 		fmt.Println("err on open: ", err)
 		return nil, err
 	}
+	tx, err := db.Begin()
+	if err != nil {
+		fmt.Println("err on begin: ", err)
+		return nil, err
+	}
 	sqlCreate := "CREATE TABLE IF NOT EXISTS Device (" +
-		"id INTEGER PRIMARY KEY, Ip VARCHAR(40), " +
-		"Port INTEGER, Device VARCHAR(40), InRing INTEGER, " +
-		"Weight FLOAT, Mounted INTEGER, Reachable INTEGER, " +
+		"id INTEGER PRIMARY KEY, Ip VARCHAR(40) NOT NULL, " +
+		"Port INTEGER NOT NULL, Device VARCHAR(40) NOT NULL, InRing INTEGER NOT NULL, " +
+		"Weight FLOAT NOT NULL, Mounted INTEGER NOT NULL, Reachable INTEGER NOT NULL, " +
 		"CreateDate DATETIME DEFAULT CURRENT_TIMESTAMP, " +
 		"LastUpdate DATETIME DEFAULT CURRENT_TIMESTAMP);" +
 
@@ -188,6 +193,10 @@ func (bc *BirdCatcher) getDb() (*sql.DB, error) {
 		fmt.Println("err on init Device: ", err)
 		return nil, err
 	}
+	if err = tx.Commit(); err != nil {
+		fmt.Println("err on commit: ", err)
+		return nil, err
+	}
 	return db, nil
 }
 
@@ -197,13 +206,13 @@ type ipPort struct {
 	up   bool
 }
 
-func (bc *BirdCatcher) getRingData() (map[string]*hummingbird.Device, []ipPort) {
+func (bc *BirdCatcher) getRingData() (map[string]hummingbird.Device, []ipPort) {
 
-	allRingDevices := make(map[string]*hummingbird.Device)
+	allRingDevices := make(map[string]hummingbird.Device)
 	var allWeightedServers []ipPort
 	weightedServers := make(map[string]bool)
 	for _, dev := range bc.oring.AllDevices() {
-		allRingDevices[bc.deviceId(dev.Ip, dev.Port, dev.Device)] = &dev
+		allRingDevices[bc.deviceId(dev.Ip, dev.Port, dev.Device)] = dev
 
 		if dev.Weight > 0 {
 			if _, ok := weightedServers[bc.serverId(dev.Ip, dev.Port)]; !ok {
@@ -222,57 +231,78 @@ func (bc *BirdCatcher) updateDb() error {
 	if err != nil {
 		return err
 	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
 	allRingDevices, allWeightedServers := bc.getRingData()
 	unmountedDevices := make(map[string]bool)
 
 	reconDevices, downServers := bc.gatherReconData(allWeightedServers)
+	fmt.Println("vvvvvvvvv: ", reconDevices[0].Mounted)
 	for _, rData := range reconDevices {
-		unmountedDevices[bc.deviceId(rData.ip, rData.port, rData.Device)] = true
+		if !rData.Mounted {
+			unmountedDevices[bc.deviceId(rData.ip, rData.port, rData.Device)] = rData.Mounted
+		}
 	}
-	rows, _ := db.Query("SELECT Ip, Port, Device, Weight, Mounted FROM Device")
+	rows, _ := tx.Query("SELECT Ip, Port, Device, Weight, Mounted FROM Device")
 	var qryErrors []error
 	for rows.Next() {
-		var ip, device string // think i have to do that sql.null thing here
-		var port, mounted int
+		var ip, device string
+		var port int
+		var mounted bool
 		var weight float64
 
-		if err := rows.Scan(&ip, &port, &device, &weight); err != nil {
+		if err := rows.Scan(&ip, &port, &device, &weight, &mounted); err != nil {
+			fmt.Println("z11111111")
 			qryErrors = append(qryErrors, err)
 		} else {
+			fmt.Println("z2222222")
+
 			dKey := bc.deviceId(ip, port, device)
 			rDev, inRing := allRingDevices[dKey]
 			_, inUnmounted := unmountedDevices[dKey]
 			_, notReachable := downServers[bc.serverId(ip, port)]
 			if !inRing {
 				//TODO- handle errors
-				_, err = db.Exec("UPDATE Device SET InRing=0 "+
+				fmt.Println("z33333333")
+				_, err = tx.Exec("UPDATE Device SET InRing=0 "+
 					"WHERE Ip=? AND Port=? AND Device=?", ip, port, device)
 			} else {
 				if !notReachable {
-					if rDev.Weight != weight || mounted > 0 == inUnmounted {
-						_, err = db.Exec("UPDATE Device SET "+
-							"Weight=? Mounted=? "+
+					fmt.Println("z444444: ", inUnmounted)
+					if rDev.Weight != weight || mounted == inUnmounted {
+						_, err = tx.Exec("UPDATE Device SET "+
+							"Weight=?, Mounted=? "+
 							"WHERE Ip=? AND Port=? AND Device=?",
 							rDev.Weight, !inUnmounted, ip, port, device)
+						fmt.Println("frfrf: ", err)
 					}
 				}
 			}
 			delete(allRingDevices, dKey)
 		}
 	}
+	rows.Close()
 	for _, ipp := range downServers {
-		_, err = db.Exec("UPDATE Device SET Reachable=0 "+
-			"WHERE Ip=? AND Port=? AND Device=?", ipp.ip, ipp.port)
+		_, err = tx.Exec("UPDATE Device SET Reachable=0 "+
+			"WHERE Ip=? AND Port=?", ipp.ip, ipp.port)
 	}
 	for _, rDev := range allRingDevices {
 		dKey := bc.deviceId(rDev.Ip, rDev.Port, rDev.Device)
 		_, isUnmounted := unmountedDevices[dKey]
 		_, notReachable := downServers[bc.serverId(rDev.Ip, rDev.Port)]
-		_, err = db.Exec("INSERT INTO Device "+
+		_, err = tx.Exec("INSERT INTO Device "+
 			"(Ip, Port, Device, InRing, Weight, Mounted, Reachable) VALUES"+
-			"(?,?,?,?,?)",
+			"(?,?,?,?,?,?,?)",
 			rDev.Ip, rDev.Port, rDev.Device,
 			true, rDev.Weight, !isUnmounted, !notReachable)
+		fmt.Println("inserting: ", rDev.Device, err, !isUnmounted)
+	}
+	if err = tx.Commit(); err != nil {
+		fmt.Println("$$$$$$$$$$$$$$$$$$$$$$$$")
+
+		return err
 	}
 	return nil
 }
@@ -317,7 +347,7 @@ func (bc *BirdCatcher) Run() {
 
 }
 
-func GetBirdCatcher() (*BirdCatcher, error) {
+func GetBirdCatcher(serverconf hummingbird.Config) (*BirdCatcher, error) {
 
 	hashPathPrefix, hashPathSuffix, err := hummingbird.GetHashPrefixAndSuffix()
 	if err != nil {
@@ -330,11 +360,15 @@ func GetBirdCatcher() (*BirdCatcher, error) {
 		fmt.Println("Unable to load ring:", err)
 		return nil, err
 	}
-	bc := &BirdCatcher{workingDir: "/tmp"}
-	bc.getDb()
+	workingDir, ok := serverconf.Get("andrewd", "working_dir")
+	if !ok {
+		panic("Invalid Config")
+	}
+	bc := &BirdCatcher{workingDir: workingDir}
+	//bc.getDb()
 	bc.oring = objRing
-	bc.logger = hummingbird.SetupLogger("LOG_LOCAL2", "birdcatcher", "")
-	// fix at some point (add conf)
+	bc.logger = hummingbird.SetupLogger(serverconf.GetDefault(
+		"andrewd", "log_facility", "LOG_LOCAL0"), "birdcatcher", "")
 	return bc, nil
 
 }
