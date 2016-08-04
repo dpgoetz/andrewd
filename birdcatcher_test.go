@@ -1,4 +1,4 @@
-//  Copyright (c) 2015 Rackspace
+//  Copyright (c) 2016 Rackspace
 //
 //  Licensed under the Apache License, Version 2.0 (the "License");
 //  you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@
 package andrewd
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -24,8 +25,10 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/openstack/swift/go/hummingbird"
 	"github.com/stretchr/testify/require"
@@ -300,4 +303,90 @@ func TestUpdateDb(t *testing.T) {
 	}
 	rows.Close()
 	require.Equal(t, cnt, 1)
+}
+
+func TestUpdateRing(t *testing.T) {
+	t.Parallel()
+
+	bc, _ := getBc()
+	defer closeBc(bc)
+
+	db, _ := bc.getDb()
+	defer db.Close()
+
+	tx, err := db.Begin()
+	require.Equal(t, err, nil)
+
+	now := time.Now()
+	_, err = tx.Exec("INSERT INTO Device "+
+		"(Ip, Port, Device, InRing, Weight, Mounted, Reachable, LastUpdate) VALUES"+
+		"(?,?,?,?,?,?,?,?)", "1.2.3.4", 6000, "sdb1", true, 2.3, false, true, now.AddDate(0, 0, -8))
+	_, err = tx.Exec("INSERT INTO Device "+
+		"(Ip, Port, Device, InRing, Weight, Mounted, Reachable, LastUpdate) VALUES"+
+		"(?,?,?,?,?,?,?,?)", "1.2.3.4", 6000, "sdb2", true, 2.3, false, true, now.AddDate(0, 0, -3))
+	fmt.Println("bbbbb: ", err)
+	require.Equal(t, err, nil)
+	require.Equal(t, tx.Commit(), nil)
+
+	fmt.Println("xxx: ", -bc.maxAge)
+	fmt.Println("yyy: ", hummingbird.ONE_WEEK)
+	fmt.Println("xxx: ", now.Add(-bc.maxAge))
+	rows, err := db.Query("SELECT Ip, Port, Device, Weight, Mounted, Reachable, LastUpdate FROM Device WHERE (Mounted=0 OR Reachable=0) AND LastUpdate < ?", now.Add(-bc.maxAge))
+
+	var ip, device string
+	var port int
+	var mounted, reachable bool
+	var weight float64
+	var lastU time.Time
+
+	for rows.Next() {
+		if err := rows.Scan(&ip, &port, &device, &weight, &mounted, &reachable, &lastU); err != nil {
+			fmt.Println("vvvv: ", err)
+		} else {
+			fmt.Println("wwwww: ", device, lastU)
+		}
+	}
+
+	ringBuilder := fmt.Sprintf("%s/object.builder", bc.workingDir)
+	fmt.Println("lalala object.builder ", ringBuilder)
+	bc.ringBuilder = ringBuilder
+	cmd := exec.Command("swift-ring-builder", ringBuilder, "create", "4", "3", "1")
+
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	require.Equal(t, cmd.Run(), nil)
+	fmt.Printf("did it work: %s\n", out.String())
+
+	cmd = exec.Command("swift-ring-builder", ringBuilder, "add", "r1z1-1.2.3.4:6000/sdb1", "1")
+	cmd.Stdout = &out
+	cmd.Run() //require.Equal(t, cmd.Run(), nil)
+	fmt.Printf("did it work 22: %s\n", out.String())
+
+	cmd = exec.Command("swift-ring-builder", ringBuilder, "add", "r1z1-1.2.3.4:6000/sdb2", "1")
+	cmd.Stdout = &out
+	require.Equal(t, cmd.Run(), nil)
+	fmt.Printf("did it work 22: %s\n", out.String())
+
+	fi, err := os.Stat(ringBuilder)
+	fmt.Println("zzzzzz: ", fi)
+	require.Equal(t, err, nil)
+
+	output, errs := bc.updateRing()
+	fmt.Println("ooooo: ", output)
+	fmt.Println("kkkkkkkkk: ", errs)
+
+	var out2 bytes.Buffer
+	cmd = exec.Command("swift-ring-builder", ringBuilder, "search", "--device=sdb1", "--weight=1")
+	cmd.Stdout = &out2
+	require.NotEqual(t, cmd.Run(), nil)
+
+	cmd = exec.Command("swift-ring-builder", ringBuilder, "search", "--device=sdb1", "--weight=0")
+	cmd.Stdout = &out2
+	require.Equal(t, cmd.Run(), nil)
+
+	var out3 bytes.Buffer
+	cmd = exec.Command("swift-ring-builder", ringBuilder, "search", "--device=sdb2", "--weight=1")
+	cmd.Stdout = &out3
+	require.Equal(t, cmd.Run(), nil)
+	fmt.Printf("did it work 44: %s\n", out3.String())
 }

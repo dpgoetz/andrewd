@@ -1,4 +1,4 @@
-//  Copyright (c) 2015 Rackspace
+//  Copyright (c) 2016 Rackspace
 //
 //  Licensed under the Apache License, Version 2.0 (the "License");
 //  you may not use this file except in compliance with the License.
@@ -16,11 +16,13 @@
 package andrewd
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"os/exec"
 	"path/filepath"
 	"time"
 
@@ -29,9 +31,11 @@ import (
 )
 
 type BirdCatcher struct {
-	oring      hummingbird.Ring
-	logger     hummingbird.SysLogLike
-	workingDir string
+	oring       hummingbird.Ring
+	logger      hummingbird.SysLogLike
+	workingDir  string
+	maxAge      time.Duration
+	ringBuilder string
 }
 
 type ReconData struct {
@@ -177,6 +181,12 @@ func (bc *BirdCatcher) getDb() (*sql.DB, error) {
 		"CreateDate DATETIME DEFAULT CURRENT_TIMESTAMP, Notes VARCHAR(255), " +
 		"FOREIGN KEY (DeviceId) REFERENCES Device(id));" +
 
+		"CREATE TABLE IF NOT EXISTS RingActions (" +
+		"id INTEGER PRIMARY KEY, Ip VARCHAR(40) NOT NULL, " +
+		"Port INTEGER NOT NULL, Device VARCHAR(40) NOT NULL, " +
+		"Action VARCHAR(20), Command VARCHAR(200), " +
+		"CreateDate DATETIME DEFAULT CURRENT_TIMESTAMP);" +
+
 		"CREATE TRIGGER IF NOT EXISTS DeviceLastUpdate " +
 		"AFTER UPDATE ON Device FOR EACH ROW " +
 		"BEGIN UPDATE Device SET LastUpdate = CURRENT_TIMESTAMP " +
@@ -307,27 +317,56 @@ func (bc *BirdCatcher) updateDb() error {
 	return nil
 }
 
-/*
-func (bc *BirdCatcher) updateRing() error {
+func (bc *BirdCatcher) updateRing() (output []string, cmdErrors []error) {
 	db, err := bc.getDb()
 	if err != nil {
-		return err
+		cmdErrors = append(cmdErrors, err)
+		return nil, cmdErrors
 	}
-	rows, _ := db.Query("SELECT Ip, Port, Device, Weight, Mounted FROM Device")
+	now := time.Now()
+	rows, err := db.Query("SELECT Ip, Port, Device, Weight, Mounted, Reachable FROM Device WHERE (Mounted=0 OR Reachable=0) AND LastUpdate < ?", now.Add(-bc.maxAge))
 	var qryErrors []error
-	for rows.Next() {
-		var ip, device string // think i have to do that sql.null thing here
-		var port, mounted int
-		var weight float64
+	var badDevices []string
 
-		if err := rows.Scan(&ip, &port, &device, &weight); err != nil {
+	fmt.Println("lalala: ", rows)
+	fmt.Println("lalala mooo: ", err)
+	for rows.Next() {
+		fmt.Println("are rowsa")
+		var ip, device string // think i have to do that sql.null thing here
+		var port int
+		var weight float64
+		var mounted, reachable bool
+
+		if err := rows.Scan(&ip, &port, &device, &weight, &mounted, &reachable); err != nil {
 			qryErrors = append(qryErrors, err)
 		} else {
+			fmt.Println("sadf: ", ip, port, device)
+			badDevices = append(badDevices, bc.deviceId(ip, port, device))
 		}
 	}
-	return nil
+	rows.Close()
+
+	//	var cmdErrors []error
+	//	var output []string
+	for _, dev := range badDevices {
+
+		fmt.Println("3333333333: ", dev)
+		cmd := exec.Command(
+			"swift-ring-builder", bc.ringBuilder, "set_weight", dev, "0")
+		var out bytes.Buffer
+		cmd.Stdout = &out
+		if err := cmd.Run(); err != nil {
+			fmt.Println("55555555555: ", err)
+			cmdErrors = append(cmdErrors, err)
+		} else {
+			output = append(output, out.String())
+		}
+
+	}
+
+	// update database
+	return output, cmdErrors
 }
-*/
 
 func (bc *BirdCatcher) Run() {
 	// Get all devices in ring.
@@ -343,8 +382,7 @@ func (bc *BirdCatcher) Run() {
 	// remove any devices that have been unmounted > a week
 	// write a json object with results that can be used for monitoring
 	bc.updateDb()
-	//bc.updateRing()
-
+	bc.updateRing()
 }
 
 func GetBirdCatcher(serverconf hummingbird.Config) (*BirdCatcher, error) {
@@ -364,7 +402,12 @@ func GetBirdCatcher(serverconf hummingbird.Config) (*BirdCatcher, error) {
 	if !ok {
 		panic("Invalid Config")
 	}
-	bc := &BirdCatcher{workingDir: workingDir}
+	maxAge := time.Duration(serverconf.GetInt("andrewd", "max_age_sec", int64(hummingbird.ONE_WEEK*time.Second)))
+	ringBuilder := serverconf.GetDefault("andrewd", "ring_builder", "/etc/swift/object.builder")
+
+	bc := &BirdCatcher{workingDir: workingDir,
+		maxAge:      maxAge,
+		ringBuilder: ringBuilder}
 	//bc.getDb()
 	bc.oring = objRing
 	bc.logger = hummingbird.SetupLogger(serverconf.GetDefault(
