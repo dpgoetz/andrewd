@@ -87,7 +87,7 @@ func (bc *BirdCatcher) reconGetUnmounted(ip string, port int,
 
 	serverUrl := fmt.Sprintf("http://%s:%d/recon/unmounted", ip, port)
 
-	fmt.Println(serverUrl)
+	//fmt.Println(serverUrl)
 	client := http.Client{Timeout: 10 * time.Second}
 	req, err := http.NewRequest("GET", serverUrl, nil)
 	if err != nil {
@@ -148,7 +148,6 @@ func (bc *BirdCatcher) gatherReconData(servers []ipPort) (devs []*ReconData, dow
 			devs = append(devs, rd)
 		case ipp := <-doneServersChan:
 			if ipp.up != true {
-				fmt.Println("poooooo: ", downServers)
 				downServers[bc.serverId(ipp.ip, ipp.port)] = ipp
 			}
 			serverCount -= 1
@@ -184,7 +183,7 @@ func (bc *BirdCatcher) getDb() (*sql.DB, error) {
 		"CREATE TABLE IF NOT EXISTS RingActions (" +
 		"id INTEGER PRIMARY KEY, Ip VARCHAR(40) NOT NULL, " +
 		"Port INTEGER NOT NULL, Device VARCHAR(40) NOT NULL, " +
-		"Action VARCHAR(20), Command VARCHAR(200), " +
+		"Action VARCHAR(20) NOT NULL, Success INTEGER NOT NULL, " +
 		"CreateDate DATETIME DEFAULT CURRENT_TIMESTAMP);" +
 
 		"CREATE TRIGGER IF NOT EXISTS DeviceLastUpdate " +
@@ -307,11 +306,8 @@ func (bc *BirdCatcher) updateDb() error {
 			"(?,?,?,?,?,?,?)",
 			rDev.Ip, rDev.Port, rDev.Device,
 			true, rDev.Weight, !isUnmounted, !notReachable)
-		fmt.Println("inserting: ", rDev.Device, err, !isUnmounted)
 	}
 	if err = tx.Commit(); err != nil {
-		fmt.Println("$$$$$$$$$$$$$$$$$$$$$$$$")
-
 		return err
 	}
 	return nil
@@ -326,12 +322,9 @@ func (bc *BirdCatcher) updateRing() (output []string, cmdErrors []error) {
 	now := time.Now()
 	rows, err := db.Query("SELECT Ip, Port, Device, Weight, Mounted, Reachable FROM Device WHERE (Mounted=0 OR Reachable=0) AND LastUpdate < ?", now.Add(-bc.maxAge))
 	var qryErrors []error
-	var badDevices []string
+	var badDevices []hummingbird.Device
 
-	fmt.Println("lalala: ", rows)
-	fmt.Println("lalala mooo: ", err)
 	for rows.Next() {
-		fmt.Println("are rowsa")
 		var ip, device string // think i have to do that sql.null thing here
 		var port int
 		var weight float64
@@ -340,28 +333,36 @@ func (bc *BirdCatcher) updateRing() (output []string, cmdErrors []error) {
 		if err := rows.Scan(&ip, &port, &device, &weight, &mounted, &reachable); err != nil {
 			qryErrors = append(qryErrors, err)
 		} else {
-			fmt.Println("sadf: ", ip, port, device)
-			badDevices = append(badDevices, bc.deviceId(ip, port, device))
+			badDevices = append(badDevices, hummingbird.Device{Ip: ip, Port: port, Device: device, Weight: weight})
 		}
 	}
 	rows.Close()
 
-	//	var cmdErrors []error
-	//	var output []string
+	tx, err := db.Begin()
+	if err != nil {
+		cmdErrors = append(cmdErrors, err)
+		return nil, cmdErrors
+	}
 	for _, dev := range badDevices {
-
-		fmt.Println("3333333333: ", dev)
+		devKey := bc.deviceId(dev.Ip, dev.Port, dev.Device)
 		cmd := exec.Command(
-			"swift-ring-builder", bc.ringBuilder, "set_weight", dev, "0")
+			"swift-ring-builder", bc.ringBuilder, "set_weight", devKey, "0")
 		var out bytes.Buffer
 		cmd.Stdout = &out
+		success := true
 		if err := cmd.Run(); err != nil {
-			fmt.Println("55555555555: ", err)
 			cmdErrors = append(cmdErrors, err)
+			success = false
 		} else {
 			output = append(output, out.String())
 		}
-
+		_, err = tx.Exec("INSERT INTO RingActions "+
+			"(Ip, Port, Device, Action, Success) VALUES "+
+			"(?,?,?,?,?)", dev.Ip, dev.Port, dev.Device, "ZEROED", success)
+	}
+	if err = tx.Commit(); err != nil {
+		cmdErrors = append(cmdErrors, err)
+		return nil, cmdErrors
 	}
 
 	// update database
