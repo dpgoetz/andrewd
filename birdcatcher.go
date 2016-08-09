@@ -31,11 +31,12 @@ import (
 )
 
 type BirdCatcher struct {
-	oring       hummingbird.Ring
-	logger      hummingbird.SysLogLike
-	workingDir  string
-	maxAge      time.Duration
-	ringBuilder string
+	oring           hummingbird.Ring
+	logger          hummingbird.SysLogLike
+	workingDir      string
+	maxAge          time.Duration
+	maxWeightChange float64
+	ringBuilder     string
 }
 
 type ReconData struct {
@@ -313,17 +314,29 @@ func (bc *BirdCatcher) updateDb() error {
 	return nil
 }
 
+func (bc *BirdCatcher) getDevicesToUnmount() ([]hummingbird.Device, err) {
+
+}
+
 func (bc *BirdCatcher) updateRing() (output []string, cmdErrors []error) {
+	allRingDevices, _ := bc.getRingData()
+	totalWeight := float64(0)
+
+	for _, dev := range allRingDevices {
+		totalWeight += dev.Weight
+	}
+
 	db, err := bc.getDb()
 	if err != nil {
 		cmdErrors = append(cmdErrors, err)
 		return nil, cmdErrors
 	}
 	now := time.Now()
-	rows, err := db.Query("SELECT Ip, Port, Device, Weight, Mounted, Reachable FROM Device WHERE (Mounted=0 OR Reachable=0) AND LastUpdate < ?", now.Add(-bc.maxAge))
+	rows, err := db.Query("SELECT Ip, Port, Device, Weight, Mounted, Reachable FROM Device WHERE (Mounted=0 OR Reachable=0) AND LastUpdate < ? ORDER BY LastUpdate", now.Add(-bc.maxAge))
 	var qryErrors []error
 	var badDevices []hummingbird.Device
 
+	weightToUnmount := float64(0)
 	for rows.Next() {
 		var ip, device string // think i have to do that sql.null thing here
 		var port int
@@ -333,7 +346,10 @@ func (bc *BirdCatcher) updateRing() (output []string, cmdErrors []error) {
 		if err := rows.Scan(&ip, &port, &device, &weight, &mounted, &reachable); err != nil {
 			qryErrors = append(qryErrors, err)
 		} else {
-			badDevices = append(badDevices, hummingbird.Device{Ip: ip, Port: port, Device: device, Weight: weight})
+			weightToUnmount += weight
+			if weightToUnmount < totalWeight*bc.maxWeightChange {
+				badDevices = append(badDevices, hummingbird.Device{Ip: ip, Port: port, Device: device, Weight: weight})
+			}
 		}
 	}
 	rows.Close()
@@ -343,19 +359,33 @@ func (bc *BirdCatcher) updateRing() (output []string, cmdErrors []error) {
 		cmdErrors = append(cmdErrors, err)
 		return nil, cmdErrors
 	}
+
+	success := true
 	for _, dev := range badDevices {
 		devKey := bc.deviceId(dev.Ip, dev.Port, dev.Device)
 		cmd := exec.Command(
 			"swift-ring-builder", bc.ringBuilder, "set_weight", devKey, "0")
 		var out bytes.Buffer
 		cmd.Stdout = &out
-		success := true
 		if err := cmd.Run(); err != nil {
 			cmdErrors = append(cmdErrors, err)
 			success = false
 		} else {
 			output = append(output, out.String())
 		}
+	}
+	cmd := exec.Command("swift-ring-builder", bc.ringBuilder, "rebalance")
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	success := true
+	if err := cmd.Run(); err != nil {
+		cmdErrors = append(cmdErrors, err)
+		return nil, cmdErrors
+	} else {
+		output = append(output, out.String())
+	}
+
+	for _, dev := range badDevices {
 		_, err = tx.Exec("INSERT INTO RingActions "+
 			"(Ip, Port, Device, Action, Success) VALUES "+
 			"(?,?,?,?,?)", dev.Ip, dev.Port, dev.Device, "ZEROED", success)
@@ -370,18 +400,6 @@ func (bc *BirdCatcher) updateRing() (output []string, cmdErrors []error) {
 }
 
 func (bc *BirdCatcher) Run() {
-	// Get all devices in ring.
-	// update database with new ring- set weights, set not NotInRing anymore, add new devices
-	// for each server in DB call recon. update database as walking through.
-	// if there's a change in mountedness / reachability, update row
-	// query DB and pull any weighted devices that have been unmounted for > 1 week
-	// remove those from ring
-
-	// make dict {"ip:port/dev": -> weight}
-	// Gather all unmounted / unreachable weighted devices from recon
-	//
-	// remove any devices that have been unmounted > a week
-	// write a json object with results that can be used for monitoring
 	bc.updateDb()
 	bc.updateRing()
 }
@@ -404,11 +422,13 @@ func GetBirdCatcher(serverconf hummingbird.Config) (*BirdCatcher, error) {
 		panic("Invalid Config")
 	}
 	maxAge := time.Duration(serverconf.GetInt("andrewd", "max_age_sec", int64(hummingbird.ONE_WEEK*time.Second)))
+	maxWeightChange := serverconf.GetFloat("andrewd", "max_weight_change", 0.005)
 	ringBuilder := serverconf.GetDefault("andrewd", "ring_builder", "/etc/swift/object.builder")
 
 	bc := &BirdCatcher{workingDir: workingDir,
-		maxAge:      maxAge,
-		ringBuilder: ringBuilder}
+		maxAge:          maxAge,
+		maxWeightChange: maxWeightChange,
+		ringBuilder:     ringBuilder}
 	//bc.getDb()
 	bc.oring = objRing
 	bc.logger = hummingbird.SetupLogger(serverconf.GetDefault(
