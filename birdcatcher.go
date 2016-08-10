@@ -124,6 +124,7 @@ func (bc *BirdCatcher) reconGetUnmounted(ip string, port int,
 }
 
 func (bc *BirdCatcher) deviceId(ip string, port int, device string) string {
+	// replace this with hbird FullName when it ghets merged
 	return fmt.Sprintf("%s:%d/%s", ip, port, device)
 }
 
@@ -159,6 +160,7 @@ func (bc *BirdCatcher) gatherReconData(servers []ipPort) (devs []*ReconData, dow
 }
 
 func (bc *BirdCatcher) getDb() (*sql.DB, error) {
+	// TODO think i need to get this to return a transaction
 	db, err := sql.Open("sqlite3", filepath.Join(bc.workingDir, DbName))
 	if err != nil {
 		fmt.Println("err on open: ", err)
@@ -170,6 +172,7 @@ func (bc *BirdCatcher) getDb() (*sql.DB, error) {
 		return nil, err
 	}
 	sqlCreate := "CREATE TABLE IF NOT EXISTS Device (" +
+		// DFG TODO: need to add Region and Zone to this (maybe not...)
 		"id INTEGER PRIMARY KEY, Ip VARCHAR(40) NOT NULL, " +
 		"Port INTEGER NOT NULL, Device VARCHAR(40) NOT NULL, InRing INTEGER NOT NULL, " +
 		"Weight FLOAT NOT NULL, Mounted INTEGER NOT NULL, Reachable INTEGER NOT NULL, " +
@@ -314,11 +317,7 @@ func (bc *BirdCatcher) updateDb() error {
 	return nil
 }
 
-func (bc *BirdCatcher) getDevicesToUnmount() ([]hummingbird.Device, err) {
-
-}
-
-func (bc *BirdCatcher) updateRing() (output []string, cmdErrors []error) {
+func (bc *BirdCatcher) getDevicesToUnmount() (badDevices []hummingbird.Device, err error) {
 	allRingDevices, _ := bc.getRingData()
 	totalWeight := float64(0)
 
@@ -328,38 +327,45 @@ func (bc *BirdCatcher) updateRing() (output []string, cmdErrors []error) {
 
 	db, err := bc.getDb()
 	if err != nil {
-		cmdErrors = append(cmdErrors, err)
-		return nil, cmdErrors
+		return nil, err
 	}
 	now := time.Now()
-	rows, err := db.Query("SELECT Ip, Port, Device, Weight, Mounted, Reachable FROM Device WHERE (Mounted=0 OR Reachable=0) AND LastUpdate < ? ORDER BY LastUpdate", now.Add(-bc.maxAge))
-	var qryErrors []error
-	var badDevices []hummingbird.Device
+	rows, err := db.Query("SELECT Ip, Port, Device, Weight, Mounted, Reachable "+
+		"FROM Device WHERE (Mounted=0 OR Reachable=0) AND LastUpdate < ? "+
+		"ORDER BY LastUpdate", now.Add(-bc.maxAge))
+	//var qryErrors []error
+	//var badDevices []hummingbird.Device
 
 	weightToUnmount := float64(0)
 	for rows.Next() {
-		var ip, device string // think i have to do that sql.null thing here
+		fmt.Println("wwwwwwwwww: ")
+		var ip, device string
 		var port int
 		var weight float64
 		var mounted, reachable bool
 
 		if err := rows.Scan(&ip, &port, &device, &weight, &mounted, &reachable); err != nil {
-			qryErrors = append(qryErrors, err)
+			fmt.Println("zzzz")
+			return nil, err
 		} else {
 			weightToUnmount += weight
 			if weightToUnmount < totalWeight*bc.maxWeightChange {
+				fmt.Println("xxxxx")
 				badDevices = append(badDevices, hummingbird.Device{Ip: ip, Port: port, Device: device, Weight: weight})
 			}
 		}
 	}
 	rows.Close()
+	return badDevices, nil
+}
 
-	tx, err := db.Begin()
+func (bc *BirdCatcher) updateRing() (output []string, err error) {
+	badDevices, err := bc.getDevicesToUnmount()
+	fmt.Println("the bad devs: ", badDevices)
 	if err != nil {
-		cmdErrors = append(cmdErrors, err)
-		return nil, cmdErrors
+		fmt.Println("111111")
+		return nil, err
 	}
-
 	success := true
 	for _, dev := range badDevices {
 		devKey := bc.deviceId(dev.Ip, dev.Port, dev.Device)
@@ -368,22 +374,34 @@ func (bc *BirdCatcher) updateRing() (output []string, cmdErrors []error) {
 		var out bytes.Buffer
 		cmd.Stdout = &out
 		if err := cmd.Run(); err != nil {
-			cmdErrors = append(cmdErrors, err)
-			success = false
+			fmt.Println("222")
+			return nil, err
 		} else {
 			output = append(output, out.String())
 		}
 	}
+
 	cmd := exec.Command("swift-ring-builder", bc.ringBuilder, "rebalance")
 	var out bytes.Buffer
 	cmd.Stdout = &out
-	success := true
 	if err := cmd.Run(); err != nil {
-		cmdErrors = append(cmdErrors, err)
-		return nil, cmdErrors
+		fmt.Println("333", out.String())
+		return nil, err
 	} else {
 		output = append(output, out.String())
 	}
+
+	db, err := bc.getDb()
+	if err != nil {
+		fmt.Println("444")
+		return nil, err
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		fmt.Println("555")
+		return nil, err
+	}
+	defer db.Close()
 
 	for _, dev := range badDevices {
 		_, err = tx.Exec("INSERT INTO RingActions "+
@@ -391,12 +409,9 @@ func (bc *BirdCatcher) updateRing() (output []string, cmdErrors []error) {
 			"(?,?,?,?,?)", dev.Ip, dev.Port, dev.Device, "ZEROED", success)
 	}
 	if err = tx.Commit(); err != nil {
-		cmdErrors = append(cmdErrors, err)
-		return nil, cmdErrors
+		return nil, err
 	}
-
-	// update database
-	return output, cmdErrors
+	return output, nil
 }
 
 func (bc *BirdCatcher) Run() {
@@ -411,8 +426,7 @@ func GetBirdCatcher(serverconf hummingbird.Config) (*BirdCatcher, error) {
 		fmt.Println("Unable to load hash path prefix and suffix:", err)
 		return nil, err
 	}
-	objRing, err := hummingbird.GetRing(
-		"object", hashPathPrefix, hashPathSuffix, 0)
+	objRing, err := hummingbird.GetRing("object", hashPathPrefix, hashPathSuffix, 0)
 	if err != nil {
 		fmt.Println("Unable to load ring:", err)
 		return nil, err

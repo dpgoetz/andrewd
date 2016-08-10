@@ -16,6 +16,7 @@
 package andrewd
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -325,7 +326,7 @@ func TestUpdateRing(t *testing.T) {
 
 	ringBuilder := fmt.Sprintf("%s/object.builder", bc.workingDir)
 	bc.ringBuilder = ringBuilder
-	cmd := exec.Command("swift-ring-builder", ringBuilder, "create", "4", "3", "1")
+	cmd := exec.Command("swift-ring-builder", ringBuilder, "create", "4", "1", "1")
 
 	require.Equal(t, cmd.Run(), nil)
 
@@ -338,11 +339,31 @@ func TestUpdateRing(t *testing.T) {
 	_, err = os.Stat(ringBuilder)
 	require.Equal(t, err, nil)
 
-	_, errs := bc.updateRing()
-	require.Equal(t, len(errs), 0)
+	_, err = bc.updateRing()
+	require.Equal(t, err, nil)
 
 	cmd = exec.Command("swift-ring-builder", ringBuilder, "search", "--device=sdb1", "--weight=1")
-	require.NotEqual(t, cmd.Run(), nil)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	tr := cmd.Run()
+	fmt.Println("rrrrrrrrrr: ", out.String())
+	fmt.Println("eeeeeeee: ", tr)
+	require.Equal(t, tr, nil) //cmd.Run(), nil)
+
+	cmd = exec.Command("swift-ring-builder", ringBuilder,
+		"pretend_min_part_hours_passed")
+	require.Equal(t, cmd.Run(), nil)
+	bc.maxWeightChange = .9
+	_, err = bc.updateRing()
+	require.Equal(t, err, nil)
+
+	cmd = exec.Command("swift-ring-builder", ringBuilder, "search", "--device=sdb1", "--weight=1")
+	//var out bytes.Buffer
+	cmd.Stdout = &out
+	tr = cmd.Run()
+	fmt.Println("rrrrrrrrrr: ", out.String())
+	fmt.Println("eeeeeeee: ", tr)
+	require.NotEqual(t, tr, nil) //cmd.Run(), nil)
 
 	cmd = exec.Command("swift-ring-builder", ringBuilder, "search", "--device=sdb1", "--weight=0")
 	require.Equal(t, cmd.Run(), nil)
