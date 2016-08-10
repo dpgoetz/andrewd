@@ -346,8 +346,6 @@ func TestUpdateRing(t *testing.T) {
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	tr := cmd.Run()
-	fmt.Println("rrrrrrrrrr: ", out.String())
-	fmt.Println("eeeeeeee: ", tr)
 	require.Equal(t, tr, nil) //cmd.Run(), nil)
 
 	cmd = exec.Command("swift-ring-builder", ringBuilder,
@@ -360,10 +358,7 @@ func TestUpdateRing(t *testing.T) {
 	cmd = exec.Command("swift-ring-builder", ringBuilder, "search", "--device=sdb1", "--weight=1")
 	//var out bytes.Buffer
 	cmd.Stdout = &out
-	tr = cmd.Run()
-	fmt.Println("rrrrrrrrrr: ", out.String())
-	fmt.Println("eeeeeeee: ", tr)
-	require.NotEqual(t, tr, nil) //cmd.Run(), nil)
+	require.NotEqual(t, cmd.Run(), nil) //cmd.Run(), nil)
 
 	cmd = exec.Command("swift-ring-builder", ringBuilder, "search", "--device=sdb1", "--weight=0")
 	require.Equal(t, cmd.Run(), nil)

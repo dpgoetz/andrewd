@@ -88,7 +88,6 @@ func (bc *BirdCatcher) reconGetUnmounted(ip string, port int,
 
 	serverUrl := fmt.Sprintf("http://%s:%d/recon/unmounted", ip, port)
 
-	//fmt.Println(serverUrl)
 	client := http.Client{Timeout: 10 * time.Second}
 	req, err := http.NewRequest("GET", serverUrl, nil)
 	if err != nil {
@@ -163,12 +162,10 @@ func (bc *BirdCatcher) getDb() (*sql.DB, error) {
 	// TODO think i need to get this to return a transaction
 	db, err := sql.Open("sqlite3", filepath.Join(bc.workingDir, DbName))
 	if err != nil {
-		fmt.Println("err on open: ", err)
 		return nil, err
 	}
 	tx, err := db.Begin()
 	if err != nil {
-		fmt.Println("err on begin: ", err)
 		return nil, err
 	}
 	sqlCreate := "CREATE TABLE IF NOT EXISTS Device (" +
@@ -200,7 +197,6 @@ func (bc *BirdCatcher) getDb() (*sql.DB, error) {
 		"AFTER UPDATE ON Device FOR EACH ROW " +
 		"BEGIN INSERT INTO DeviceLog (DeviceId, Mounted, Reachable) " +
 		"VALUES (OLD.id, OLD.Mounted, OLD.Reachable);END;"
-	//fmt.Println(sqlCreate)
 	_, err = db.Exec(sqlCreate)
 	if err != nil {
 		fmt.Println("err on init Device: ", err)
@@ -252,7 +248,6 @@ func (bc *BirdCatcher) updateDb() error {
 	unmountedDevices := make(map[string]bool)
 
 	reconDevices, downServers := bc.gatherReconData(allWeightedServers)
-	fmt.Println("vvvvvvvvv: ", reconDevices[0].Mounted)
 	for _, rData := range reconDevices {
 		if !rData.Mounted {
 			unmountedDevices[bc.deviceId(rData.ip, rData.port, rData.Device)] = rData.Mounted
@@ -267,10 +262,8 @@ func (bc *BirdCatcher) updateDb() error {
 		var weight float64
 
 		if err := rows.Scan(&ip, &port, &device, &weight, &mounted); err != nil {
-			fmt.Println("z11111111")
 			qryErrors = append(qryErrors, err)
 		} else {
-			fmt.Println("z2222222")
 
 			dKey := bc.deviceId(ip, port, device)
 			rDev, inRing := allRingDevices[dKey]
@@ -278,18 +271,15 @@ func (bc *BirdCatcher) updateDb() error {
 			_, notReachable := downServers[bc.serverId(ip, port)]
 			if !inRing {
 				//TODO- handle errors
-				fmt.Println("z33333333")
 				_, err = tx.Exec("UPDATE Device SET InRing=0 "+
 					"WHERE Ip=? AND Port=? AND Device=?", ip, port, device)
 			} else {
 				if !notReachable {
-					fmt.Println("z444444: ", inUnmounted)
 					if rDev.Weight != weight || mounted == inUnmounted {
 						_, err = tx.Exec("UPDATE Device SET "+
 							"Weight=?, Mounted=? "+
 							"WHERE Ip=? AND Port=? AND Device=?",
 							rDev.Weight, !inUnmounted, ip, port, device)
-						fmt.Println("frfrf: ", err)
 					}
 				}
 			}
@@ -338,19 +328,16 @@ func (bc *BirdCatcher) getDevicesToUnmount() (badDevices []hummingbird.Device, e
 
 	weightToUnmount := float64(0)
 	for rows.Next() {
-		fmt.Println("wwwwwwwwww: ")
 		var ip, device string
 		var port int
 		var weight float64
 		var mounted, reachable bool
 
 		if err := rows.Scan(&ip, &port, &device, &weight, &mounted, &reachable); err != nil {
-			fmt.Println("zzzz")
 			return nil, err
 		} else {
 			weightToUnmount += weight
 			if weightToUnmount < totalWeight*bc.maxWeightChange {
-				fmt.Println("xxxxx")
 				badDevices = append(badDevices, hummingbird.Device{Ip: ip, Port: port, Device: device, Weight: weight})
 			}
 		}
@@ -361,9 +348,7 @@ func (bc *BirdCatcher) getDevicesToUnmount() (badDevices []hummingbird.Device, e
 
 func (bc *BirdCatcher) updateRing() (output []string, err error) {
 	badDevices, err := bc.getDevicesToUnmount()
-	fmt.Println("the bad devs: ", badDevices)
 	if err != nil {
-		fmt.Println("111111")
 		return nil, err
 	}
 	success := true
@@ -374,7 +359,6 @@ func (bc *BirdCatcher) updateRing() (output []string, err error) {
 		var out bytes.Buffer
 		cmd.Stdout = &out
 		if err := cmd.Run(); err != nil {
-			fmt.Println("222")
 			return nil, err
 		} else {
 			output = append(output, out.String())
@@ -385,7 +369,6 @@ func (bc *BirdCatcher) updateRing() (output []string, err error) {
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	if err := cmd.Run(); err != nil {
-		fmt.Println("333", out.String())
 		return nil, err
 	} else {
 		output = append(output, out.String())
@@ -393,12 +376,10 @@ func (bc *BirdCatcher) updateRing() (output []string, err error) {
 
 	db, err := bc.getDb()
 	if err != nil {
-		fmt.Println("444")
 		return nil, err
 	}
 	tx, err := db.Begin()
 	if err != nil {
-		fmt.Println("555")
 		return nil, err
 	}
 	defer db.Close()
