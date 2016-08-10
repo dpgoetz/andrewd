@@ -39,7 +39,8 @@ func getBc(settings ...string) (*BirdCatcher, error) {
 	if err != nil {
 		return nil, err
 	}
-	configString := fmt.Sprintf("[andrewd]\nworking_dir=%s\n", workDir)
+	configString := fmt.Sprintf(
+		"[andrewd]\nworking_dir=%s\nreport_dir=%s\n", workDir, workDir)
 	for i := 0; i < len(settings); i += 2 {
 		configString += fmt.Sprintf("%s=%s\n", settings[i], settings[i+1])
 	}
@@ -282,7 +283,6 @@ func TestUpdateDb(t *testing.T) {
 
 	bc.updateDb()
 
-	//	db, _ := bc.getDb()
 	rows, _ := db.Query("SELECT Ip, Port, Device, Weight, Mounted, Reachable FROM Device")
 	cnt := 0
 	for rows.Next() {
@@ -306,9 +306,9 @@ func TestUpdateRing(t *testing.T) {
 	t.Parallel()
 
 	bc, _ := getBc()
-	defer closeBc(bc)
 
 	db, _ := bc.getDb()
+	defer closeBc(bc)
 	defer db.Close()
 
 	tx, err := db.Begin()
@@ -345,20 +345,19 @@ func TestUpdateRing(t *testing.T) {
 	cmd = exec.Command("swift-ring-builder", ringBuilder, "search", "--device=sdb1", "--weight=1")
 	var out bytes.Buffer
 	cmd.Stdout = &out
-	tr := cmd.Run()
-	require.Equal(t, tr, nil) //cmd.Run(), nil)
+	require.Equal(t, cmd.Run(), nil)
 
 	cmd = exec.Command("swift-ring-builder", ringBuilder,
 		"pretend_min_part_hours_passed")
 	require.Equal(t, cmd.Run(), nil)
 	bc.maxWeightChange = .9
-	_, err = bc.updateRing()
+	outTxt, err := bc.updateRing()
 	require.Equal(t, err, nil)
+	require.Equal(t, len(outTxt), 2)
 
 	cmd = exec.Command("swift-ring-builder", ringBuilder, "search", "--device=sdb1", "--weight=1")
-	//var out bytes.Buffer
 	cmd.Stdout = &out
-	require.NotEqual(t, cmd.Run(), nil) //cmd.Run(), nil)
+	require.NotEqual(t, cmd.Run(), nil)
 
 	cmd = exec.Command("swift-ring-builder", ringBuilder, "search", "--device=sdb1", "--weight=0")
 	require.Equal(t, cmd.Run(), nil)
@@ -366,14 +365,64 @@ func TestUpdateRing(t *testing.T) {
 	cmd = exec.Command("swift-ring-builder", ringBuilder, "search", "--device=sdb2", "--weight=1")
 	require.Equal(t, cmd.Run(), nil)
 
-	rows, err := db.Query("SELECT count(*) FROM RingActions WHERE Device=? and Action=?", "sdb1", "ZEROED")
+	rows, err := db.Query("SELECT count(*) FROM RingAction WHERE Device=? and Action=?", "sdb1", "ZEROED")
 	var cnt int
-	rows.Next()
-	rows.Scan(&cnt)
-	require.Equal(t, cnt, 1)
+	if rows != nil {
+		rows.Next()
+		rows.Scan(&cnt)
+		require.Equal(t, cnt, 1)
+	}
 
-	rows, err = db.Query("SELECT count(*) FROM RingActions WHERE Device=? and Action=?", "sdb2", "ZEROED")
-	rows.Next()
-	rows.Scan(&cnt)
-	require.Equal(t, cnt, 0)
+	rows, err = db.Query("SELECT count(*) FROM RingAction WHERE Device=? and Action=?", "sdb2", "ZEROED")
+	if rows != nil {
+		rows.Next()
+		rows.Scan(&cnt)
+		require.Equal(t, cnt, 0)
+	}
+
+	rData, err := bc.getReportData()
+	require.Equal(t, err, nil)
+	require.Equal(t, rData.TotalDevices, 2)
+	require.Equal(t, len(rData.LastRingZeroes), 1)
+	require.Equal(t, rData.LastRingZeroes[0].Device, "sdb1")
+}
+
+func TestProduceReport(t *testing.T) {
+	t.Parallel()
+
+	bc, _ := getBc()
+	defer closeBc(bc)
+	db, _ := bc.getDb()
+	defer db.Close()
+	tx, err := db.Begin()
+	require.Equal(t, err, nil)
+
+	_, err = tx.Exec("INSERT INTO Device "+
+		"(Ip, Port, Device, InRing, Weight, Mounted, Reachable) VALUES"+
+		"(?,?,?,?,?,?,?)", "1.2.3.4", 6000, "sdb1", true, 2.3, true, true)
+	require.Equal(t, err, nil)
+	require.Equal(t, tx.Commit(), nil)
+
+	rData, err := bc.getReportData()
+	require.Equal(t, err, nil)
+	require.Equal(t, rData.TotalDevices, 1)
+	require.Equal(t, rData.TotalWeight, 2.3)
+	require.Equal(t, len(rData.UnmountedDevices), 0)
+	require.Equal(t, len(rData.LastRingZeroes), 0)
+
+	tx, err = db.Begin()
+	require.Equal(t, err, nil)
+
+	_, err = tx.Exec("INSERT INTO Device "+
+		"(Ip, Port, Device, InRing, Weight, Mounted, Reachable) VALUES"+
+		"(?,?,?,?,?,?,?)", "1.2.3.4", 6000, "sdb2", true, 0, false, true)
+	require.Equal(t, err, nil)
+	require.Equal(t, tx.Commit(), nil)
+
+	rData, err = bc.getReportData()
+	require.Equal(t, err, nil)
+	require.Equal(t, rData.TotalDevices, 2)
+	require.Equal(t, rData.TotalWeight, 2.3)
+	require.Equal(t, len(rData.UnmountedDevices), 1)
+	require.Equal(t, len(rData.LastRingZeroes), 0)
 }
