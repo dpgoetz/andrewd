@@ -217,11 +217,9 @@ func (bc *BirdCatcher) getDb() (*sql.DB, error) {
 		"VALUES (OLD.id, OLD.Mounted, OLD.Reachable);END;"
 	_, err = db.Exec(sqlCreate)
 	if err != nil {
-		fmt.Println("err on init Device: ", err)
 		return nil, err
 	}
 	if err = tx.Commit(); err != nil {
-		fmt.Println("err on commit: ", err)
 		return nil, err
 	}
 	bc.db = db
@@ -243,7 +241,6 @@ func (bc *BirdCatcher) getRingData() (map[string]hummingbird.Device, []ipPort) {
 		if dev.Ip == "" {
 			continue
 		}
-		//fmt.Println("a dev: ", dev.Device, dev.Ip)
 		allRingDevices[bc.deviceId(dev.Ip, dev.Port, dev.Device)] = dev
 
 		if dev.Weight > 0 {
@@ -405,18 +402,15 @@ func (bc *BirdCatcher) updateRing() (outputStr string, err error) {
 	badDevices, err := bc.getDevicesToUnmount()
 	var output []string
 	if err != nil {
-		fmt.Println("aaaa111")
 		return "", err
 	}
 	for _, dev := range badDevices {
 		devKey := bc.deviceId(dev.Ip, dev.Port, dev.Device)
-		fmt.Println("going to remove: ", dev.Ip, dev.Port, dev.Device)
 		cmd := exec.Command(
 			"swift-ring-builder", bc.ringBuilder, "set_weight", devKey, "0")
 		var out bytes.Buffer
 		cmd.Stdout = &out
 		if err := cmd.Run(); err != nil {
-			fmt.Println("aaaa222")
 			return "", err
 		} else {
 			output = append(output, out.String())
@@ -427,7 +421,6 @@ func (bc *BirdCatcher) updateRing() (outputStr string, err error) {
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	if err := cmd.Run(); err != nil {
-		fmt.Println("aaaa333")
 		return "", err
 	} else {
 		output = append(output, out.String())
@@ -435,12 +428,10 @@ func (bc *BirdCatcher) updateRing() (outputStr string, err error) {
 
 	db, err := bc.getDb()
 	if err != nil {
-		fmt.Println("aaaa444")
 		return "", err
 	}
 	tx, err := db.Begin()
 	if err != nil {
-		fmt.Println("aaaa555")
 		return "", err
 	}
 	//defer db.Close()
@@ -452,13 +443,11 @@ func (bc *BirdCatcher) updateRing() (outputStr string, err error) {
 			"(Ip, Port, Device, Action, CreateDate) VALUES "+
 			"(?,?,?,?,?)", dev.Ip, dev.Port, dev.Device, "ZEROED", now)
 		if err != nil {
-			fmt.Println("aaaa666")
 			return "", err
 
 		}
 	}
 	if err = tx.Commit(); err != nil {
-		fmt.Println("aaaa7777")
 		return "", err
 	}
 	return strings.Join(output, "\n"), nil
@@ -589,15 +578,12 @@ func (r *BirdCatcher) LogDebug(format string, args ...interface{}) {
 }
 
 func (bc *BirdCatcher) Run() {
-	fmt.Println("RUn got called")
 	bc.logger.Info("AndrewD Starting Run")
 
 	err := bc.updateDb()
 	var msg string
 	if bc.needRingUpdate() {
 		msg, err = bc.updateRing()
-		fmt.Println("the updateRing out: ", msg)
-		fmt.Println("the updateRing err: ", err)
 	}
 	err = bc.produceReport()
 	if err != nil {
@@ -610,7 +596,6 @@ func (bc *BirdCatcher) Run() {
 }
 
 func (bc *BirdCatcher) RunForever() {
-	fmt.Println("RUn forever got called")
 	for {
 		bc.Run()
 		time.Sleep(bc.runFreq)

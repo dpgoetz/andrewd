@@ -95,16 +95,10 @@ func StartDaemon() {
 		return
 	}
 	uid, gid, err := hummingbird.UidFromConf(conf)
-	fmt.Println("vvvv: ", uid)
-	fmt.Println("vvvv222: ", gid)
-
-	fmt.Println("cc: ", dExec)
 	cmd := exec.Command(dExec, "run", "-d", "-c", conf)
 
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if uint32(os.Getuid()) != uid {
-		fmt.Println("ddddd: ", uid)
-		fmt.Println("eeeee: ", os.Getuid())
 		cmd.SysProcAttr.Credential = &syscall.Credential{Uid: uid, Gid: gid}
 	}
 	rdp, err := cmd.StdoutPipe()
@@ -126,8 +120,6 @@ func StartDaemon() {
 		process, _ := GetProcess(cmd.Process.Pid)
 		process.Signal(syscall.SIGTERM)
 		process.Wait()
-	} else {
-		fmt.Println("Daemon Started: ", err)
 	}
 }
 
@@ -189,8 +181,6 @@ func main() {
 		return
 	}
 
-	fmt.Println("jjjjjjjjjjjj: ", runFlags)
-	fmt.Println("kkkkkkkkk: ", flag.Arg(0))
 	switch flag.Arg(0) {
 	case "version":
 		fmt.Println(Version)
@@ -202,7 +192,6 @@ func main() {
 		ProcessControlCommand(RestartDaemon)
 	case "run":
 		runFlags.Parse(flag.Args()[1:])
-		fmt.Println("qqqqqqqqqq: ", runFlags)
 		hummingbird.RunDaemon(andrewd.GetBirdCatcher, runFlags)
 	default:
 		flag.Usage()

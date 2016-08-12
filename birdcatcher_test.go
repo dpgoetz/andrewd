@@ -355,7 +355,6 @@ func TestUpdateRing(t *testing.T) {
 	bc.maxWeightChange = .9
 	outTxt, err := bc.updateRing()
 	require.Equal(t, err, nil)
-	fmt.Println("xcxcxcxc: ", outTxt)
 	require.True(t, strings.Index(outTxt, "Reassigned 8 (50.00%) partitions.") > 0)
 
 	cmd = exec.Command("swift-ring-builder", ringBuilder, "search", "--device=sdb1", "--weight=1")
