@@ -16,27 +16,195 @@
 package main
 
 import (
+	"flag"
 	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"syscall"
 
 	"github.com/dpgoetz/andrewd"
+	"github.com/openstack/swift/go/hummingbird"
 )
 
-//	"github.com/openstack/swift/go/hummingbird"
-
 var Version = "0.1"
+var PidDir = "/var/run/hummingbird"
+var PidLoc = "/var/run/hummingbird/andrewd.pid"
+
+func WritePid(pid int) error {
+	file, err := os.Create(PidLoc)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(file, "%d", pid)
+	file.Close()
+	return nil
+}
+
+func RemovePid() error {
+	return os.RemoveAll(PidLoc)
+}
+
+func GetProcess(pid int) (*os.Process, error) {
+	if pid == 0 {
+		//var pid int
+		file, err := os.Open(PidLoc)
+		if err != nil {
+			return nil, err
+		}
+		_, err = fmt.Fscanf(file, "%d", &pid)
+		if err != nil {
+			return nil, err
+		}
+	}
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return nil, err
+	}
+	err = process.Signal(syscall.Signal(0))
+	if err != nil {
+		return nil, err
+	}
+	return process, nil
+}
+
+func getConfig() string {
+	confLoc := "/etc/hummingbird/andrewd.conf"
+	if _, err := os.Stat(confLoc); os.IsNotExist(err) {
+		confLoc = "/etc/swift/andrewd.conf"
+		if _, err := os.Stat(confLoc); os.IsNotExist(err) {
+			return ""
+		}
+	}
+	return confLoc
+}
+
+func StartDaemon() {
+	_, err := GetProcess(0)
+	if err == nil {
+		return
+	}
+	conf := getConfig()
+	if conf == "" {
+		fmt.Println("Unable to find config file.")
+		return
+	}
+	dExec, err := exec.LookPath(os.Args[0])
+	if err != nil {
+		fmt.Println("Unable to find executable in path.")
+		return
+	}
+	uid, gid, err := hummingbird.UidFromConf(conf)
+	fmt.Println("vvvv: ", uid)
+	fmt.Println("vvvv222: ", gid)
+
+	fmt.Println("cc: ", dExec)
+	cmd := exec.Command(dExec, "run", "-d", "-c", conf)
+
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if uint32(os.Getuid()) != uid {
+		fmt.Println("ddddd: ", uid)
+		fmt.Println("eeeee: ", os.Getuid())
+		cmd.SysProcAttr.Credential = &syscall.Credential{Uid: uid, Gid: gid}
+	}
+	rdp, err := cmd.StdoutPipe()
+	cmd.Stderr = cmd.Stdout
+	if err != nil {
+		fmt.Println("Error creating stdout pipe:", err)
+		return
+	}
+	syscall.Umask(022)
+
+	err = cmd.Start()
+	if err != nil {
+		fmt.Println("Error starting daemon: ", err)
+		return
+	}
+	io.Copy(os.Stdout, rdp)
+	if err = WritePid(cmd.Process.Pid); err != nil {
+		fmt.Println("Could not create pid: ", err)
+		process, _ := GetProcess(cmd.Process.Pid)
+		process.Signal(syscall.SIGTERM)
+		process.Wait()
+	} else {
+		fmt.Println("Daemon Started: ", err)
+	}
+}
+
+func StopDaemon() {
+	process, err := GetProcess(0)
+	if err != nil {
+		fmt.Println("Error finding process: ", err)
+		return
+	}
+	process.Signal(syscall.SIGTERM)
+	process.Wait()
+	RemovePid()
+	fmt.Println("Process Stopped")
+}
+
+func RestartDaemon() {
+	StopDaemon()
+	StartDaemon()
+}
+
+func ProcessControlCommand(cmd func()) {
+	if _, err := os.Stat(PidDir); os.IsNotExist(err) {
+		err := os.MkdirAll(PidDir, 0600)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, fmt.Sprintf("Unable to create %s\n", PidDir))
+			fmt.Fprintf(os.Stderr, "You should create it, writable by the user you are running with.\n")
+			os.Exit(1)
+		}
+	}
+	cmd()
+}
 
 func main() {
-	fmt.Println("hello")
+	runFlags := flag.NewFlagSet("Run server", flag.ExitOnError)
+	runFlags.Bool("d", false, "Close stdio once server is running")
+	runFlags.Bool("once", false, "Run one pass of andrewd")
+	runFlags.String("c", getConfig(), "Config file to use")
+	runFlags.Usage = func() {
+		fmt.Fprintf(os.Stderr, "andrewd run [ARGS]\n")
+		runFlags.PrintDefaults()
+	}
 
-	bc, _ := andrewd.GetBirdCatcher()
-	//	fmt.Println("the ring: ", bc.AllDevs())
-	reconData, reconErrs := bc.GatherReconData()
-	fmt.Println("12345: ", reconData[0].Device, reconData[0].Mounted)
-	fmt.Println("12345: ", reconErrs)
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: andrewd [command] [args...]\n")
+		flag.PrintDefaults()
+		fmt.Fprintf(os.Stderr, "            start: start daemon\n")
+		fmt.Fprintf(os.Stderr, "             stop: stop daemon\n")
+		fmt.Fprintf(os.Stderr, "          restart: stop then restart daemon\n")
+		fmt.Fprintf(os.Stderr, "           version: prints the version\n")
+		fmt.Fprintf(os.Stderr, "              run: run andrewd (attached)\n")
+		fmt.Fprintf(os.Stderr, "\n")
+		runFlags.Usage()
+		fmt.Fprintf(os.Stderr, "\n")
+	}
 
-	fmt.Println("is it 4: ", len(reconData))
+	flag.Parse()
+	if flag.NArg() < 1 {
+		flag.Usage()
+		return
+	}
 
-	for _, val := range reconData {
-		fmt.Println("reconDev: ", val.Device)
+	fmt.Println("jjjjjjjjjjjj: ", runFlags)
+	fmt.Println("kkkkkkkkk: ", flag.Arg(0))
+	switch flag.Arg(0) {
+	case "version":
+		fmt.Println(Version)
+	case "start":
+		ProcessControlCommand(StartDaemon)
+	case "stop":
+		ProcessControlCommand(StopDaemon)
+	case "restart":
+		ProcessControlCommand(RestartDaemon)
+	case "run":
+		runFlags.Parse(flag.Args()[1:])
+		fmt.Println("qqqqqqqqqq: ", runFlags)
+		hummingbird.RunDaemon(andrewd.GetBirdCatcher, runFlags)
+	default:
+		flag.Usage()
 	}
 }

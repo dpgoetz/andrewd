@@ -15,7 +15,7 @@ fmt:
 	go fmt ./...
 
 install: all
-	cp bin/* $(DESTDIR)/usr/bin
+	cp bin/andrewd $(DESTDIR)/usr/bin/andrewd
 
 develop: all
 	ln -f -s `pwd`/bin/* -t /usr/local/bin/

@@ -19,11 +19,13 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io/ioutil"
 	"net/http"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -40,7 +42,8 @@ type BirdCatcher struct {
 	maxAge          time.Duration
 	maxWeightChange float64
 	ringBuilder     string
-	durBetweenRun   time.Duration
+	ringUpdateFreq  time.Duration
+	runFreq         time.Duration
 	db              *sql.DB
 }
 
@@ -182,22 +185,25 @@ func (bc *BirdCatcher) getDb() (*sql.DB, error) {
 		return nil, err
 	}
 	sqlCreate := "CREATE TABLE IF NOT EXISTS Device (" +
-		// DFG TODO: need to add Region and Zone to this (maybe not...)
 		"id INTEGER PRIMARY KEY, Ip VARCHAR(40) NOT NULL, " +
 		"Port INTEGER NOT NULL, Device VARCHAR(40) NOT NULL, InRing INTEGER NOT NULL, " +
 		"Weight FLOAT NOT NULL, Mounted INTEGER NOT NULL, Reachable INTEGER NOT NULL, " +
-		"CreateDate DATETIME DEFAULT CURRENT_TIMESTAMP, " +
-		"LastUpdate DATETIME DEFAULT CURRENT_TIMESTAMP);" +
+		"CreateDate TIMESTAMP DEFAULT CURRENT_TIMESTAMP, " +
+		"LastUpdate TIMESTAMP DEFAULT CURRENT_TIMESTAMP);" +
 
 		"CREATE TABLE IF NOT EXISTS DeviceLog (" +
 		"DeviceId INTEGER, Mounted INTEGER, Reachable INTEGER " +
-		"CreateDate DATETIME DEFAULT CURRENT_TIMESTAMP, Notes VARCHAR(255), " +
+		"CreateDate TIMESTAMP DEFAULT CURRENT_TIMESTAMP, Notes VARCHAR(255), " +
 		"FOREIGN KEY (DeviceId) REFERENCES Device(id));" +
 
 		"CREATE TABLE IF NOT EXISTS RingAction (" +
 		"id INTEGER PRIMARY KEY, Ip VARCHAR(40) NOT NULL, " +
 		"Port INTEGER NOT NULL, Device VARCHAR(40) NOT NULL, " +
-		"Action VARCHAR(20) NOT NULL, CreateDate DATETIME NOT NULL);" +
+		"Action VARCHAR(20) NOT NULL, CreateDate TIMESTAMP NOT NULL);" +
+
+		"CREATE TABLE IF NOT EXISTS Run (" +
+		"id INTEGER PRIMARY KEY, Success INTEGER, Notes TEXT" +
+		"CreateDate TIMESTAMP DEFAULT CURRENT_TIMESTAMP);" +
 
 		"CREATE TRIGGER IF NOT EXISTS DeviceLastUpdate " +
 		"AFTER UPDATE ON Device FOR EACH ROW " +
@@ -234,6 +240,10 @@ func (bc *BirdCatcher) getRingData() (map[string]hummingbird.Device, []ipPort) {
 	var allWeightedServers []ipPort
 	weightedServers := make(map[string]bool)
 	for _, dev := range bc.oring.AllDevices() {
+		if dev.Ip == "" {
+			continue
+		}
+		//fmt.Println("a dev: ", dev.Device, dev.Ip)
 		allRingDevices[bc.deviceId(dev.Ip, dev.Port, dev.Device)] = dev
 
 		if dev.Weight > 0 {
@@ -249,31 +259,35 @@ func (bc *BirdCatcher) getRingData() (map[string]hummingbird.Device, []ipPort) {
 }
 
 func (bc *BirdCatcher) needRingUpdate() bool {
+	bc.LogDebug("needRingUpdate running")
 
 	db, err := bc.getDb()
 	if err != nil {
 		bc.logger.Err(fmt.Sprintf("ERROR: getDb for needRingUpdate: %v", err))
+		bc.LogDebug("needRingUpdate 1111")
 		return false
 	}
 	//defer db.Close()
-	rows, err := db.Query("SELECT MAX(CreateDate) FROM RingAction")
+	rows, err := db.Query("SELECT count(*), MAX(CreateDate) FROM RingAction")
 	defer rows.Close()
 	if err != nil {
 		bc.logger.Err(fmt.Sprintf("ERROR: SELECT for needRingUpdate: %v", err))
+		bc.LogDebug("needRingUpdate 2222")
 		return false
 	}
 	var createDate time.Time
-	rows.Next()
-	if err := rows.Scan(&createDate); err != nil {
+	var cnt int
+	if err := rows.Scan(&cnt, &createDate); err != nil && cnt > 0 {
 		// TODO: what happens on first run?
 		bc.logger.Err(fmt.Sprintf("ERROR: parse for needRingUpdate: %v", err))
+		bc.LogDebug("needRingUpdate 3333: ", cnt, err, createDate)
 		return false
 	}
-	return time.Since(createDate) > bc.durBetweenRun
-
+	return cnt == 0 || time.Since(createDate) > bc.ringUpdateFreq
 }
 
 func (bc *BirdCatcher) updateDb() error {
+	bc.LogDebug("updateDb running")
 	db, err := bc.getDb()
 	if err != nil {
 		return err
@@ -386,19 +400,24 @@ func (bc *BirdCatcher) getDevicesToUnmount() (badDevices []hummingbird.Device, e
 	return badDevices, nil
 }
 
-func (bc *BirdCatcher) updateRing() (output []string, err error) {
+func (bc *BirdCatcher) updateRing() (outputStr string, err error) {
+	bc.LogDebug("updateRing running: %s", bc.ringBuilder)
 	badDevices, err := bc.getDevicesToUnmount()
+	var output []string
 	if err != nil {
-		return nil, err
+		fmt.Println("aaaa111")
+		return "", err
 	}
 	for _, dev := range badDevices {
 		devKey := bc.deviceId(dev.Ip, dev.Port, dev.Device)
+		fmt.Println("going to remove: ", dev.Ip, dev.Port, dev.Device)
 		cmd := exec.Command(
 			"swift-ring-builder", bc.ringBuilder, "set_weight", devKey, "0")
 		var out bytes.Buffer
 		cmd.Stdout = &out
 		if err := cmd.Run(); err != nil {
-			return nil, err
+			fmt.Println("aaaa222")
+			return "", err
 		} else {
 			output = append(output, out.String())
 		}
@@ -408,35 +427,63 @@ func (bc *BirdCatcher) updateRing() (output []string, err error) {
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	if err := cmd.Run(); err != nil {
-		return nil, err
+		fmt.Println("aaaa333")
+		return "", err
 	} else {
 		output = append(output, out.String())
 	}
 
 	db, err := bc.getDb()
 	if err != nil {
-		return nil, err
+		fmt.Println("aaaa444")
+		return "", err
 	}
 	tx, err := db.Begin()
 	if err != nil {
-		return nil, err
+		fmt.Println("aaaa555")
+		return "", err
 	}
 	//defer db.Close()
 
+	bc.LogDebug("updateRing nserting: %d", len(badDevices))
 	now := time.Now()
 	for _, dev := range badDevices {
 		_, err = tx.Exec("INSERT INTO RingAction "+
 			"(Ip, Port, Device, Action, CreateDate) VALUES "+
 			"(?,?,?,?,?)", dev.Ip, dev.Port, dev.Device, "ZEROED", now)
 		if err != nil {
-			return nil, err
+			fmt.Println("aaaa666")
+			return "", err
 
 		}
 	}
 	if err = tx.Commit(); err != nil {
-		return nil, err
+		fmt.Println("aaaa7777")
+		return "", err
 	}
-	return output, nil
+	return strings.Join(output, "\n"), nil
+}
+
+func (bc *BirdCatcher) logRun(success bool, errText string) error {
+
+	db, err := bc.getDb()
+	if err != nil {
+		return err
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec("INSERT INTO Run "+
+		"(Success, Notes) VALUES "+
+		"(?,?)", success, errText)
+	if err != nil {
+		return err
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	return nil
 }
 
 type ReportDevice struct {
@@ -450,10 +497,11 @@ type ReportDevice struct {
 }
 
 type ReportData struct {
-	TotalDevices     int
-	TotalWeight      float64
-	UnmountedDevices []ReportDevice
-	LastRingZeroes   []ReportDevice
+	TotalDevices      int
+	TotalWeight       float64
+	LastSuccessfulRun time.Time
+	UnmountedDevices  []ReportDevice
+	LastRingZeroes    []ReportDevice
 }
 
 func (bc *BirdCatcher) getReportData() (*ReportData, error) {
@@ -532,25 +580,44 @@ func (bc *BirdCatcher) produceReport() error {
 	return ioutil.WriteFile(reportLoc, d, 0644)
 }
 
+func (r *BirdCatcher) LogError(format string, args ...interface{}) {
+	r.logger.Err(fmt.Sprintf(format, args...))
+}
+
+func (r *BirdCatcher) LogDebug(format string, args ...interface{}) {
+	fmt.Println(fmt.Sprintf(format, args...))
+}
+
 func (bc *BirdCatcher) Run() {
-	bc.updateDb()
+	fmt.Println("RUn got called")
+	bc.logger.Info("AndrewD Starting Run")
+
+	err := bc.updateDb()
+	var msg string
 	if bc.needRingUpdate() {
-		bc.updateRing()
+		msg, err = bc.updateRing()
+		fmt.Println("the updateRing out: ", msg)
+		fmt.Println("the updateRing err: ", err)
 	}
-	bc.produceReport()
+	err = bc.produceReport()
+	if err != nil {
+		msg = fmt.Sprintf("Error: %v", err)
+	}
+	bc.logRun(err == nil, msg)
 	bc.db.Close()
 	bc.db = nil
 
 }
 
 func (bc *BirdCatcher) RunForever() {
+	fmt.Println("RUn forever got called")
 	for {
 		bc.Run()
-		time.Sleep(time.Hour)
+		time.Sleep(bc.runFreq)
 	}
 }
 
-func GetBirdCatcher(serverconf hummingbird.Config) (*BirdCatcher, error) {
+func GetBirdCatcher(serverconf hummingbird.Config, flags *flag.FlagSet) (hummingbird.Daemon, error) {
 
 	hashPathPrefix, hashPathSuffix, err := hummingbird.GetHashPrefixAndSuffix()
 	if err != nil {
@@ -573,8 +640,8 @@ func GetBirdCatcher(serverconf hummingbird.Config) (*BirdCatcher, error) {
 	maxAge := time.Duration(serverconf.GetInt("andrewd", "max_age_sec", int64(hummingbird.ONE_WEEK*time.Second)))
 	maxWeightChange := serverconf.GetFloat("andrewd", "max_weight_change", 0.005)
 	ringBuilder := serverconf.GetDefault("andrewd", "ring_builder", "/etc/swift/object.builder")
-	daysBetweenRun := serverconf.GetInt("andrewd", "days_between_run", 3)
-	durBetweenRun := time.Duration(daysBetweenRun*24) * time.Hour
+	ringUpdateFreq := serverconf.GetInt("andrewd", "ring_update_frequency", 259200)
+	runFreq := serverconf.GetInt("andrewd", "run_frequency", 3600)
 
 	bc := &BirdCatcher{
 		workingDir:      workingDir,
@@ -582,7 +649,9 @@ func GetBirdCatcher(serverconf hummingbird.Config) (*BirdCatcher, error) {
 		maxAge:          maxAge,
 		maxWeightChange: maxWeightChange,
 		ringBuilder:     ringBuilder,
-		durBetweenRun:   durBetweenRun}
+		ringUpdateFreq:  time.Duration(ringUpdateFreq) * time.Second,
+		runFreq:         time.Duration(runFreq) * time.Second}
+
 	bc.oring = objRing
 	bc.logger = hummingbird.SetupLogger(serverconf.GetDefault(
 		"andrewd", "log_facility", "LOG_LOCAL0"), "birdcatcher", "")

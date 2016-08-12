@@ -27,6 +27,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -49,7 +50,8 @@ func getBc(settings ...string) (*BirdCatcher, error) {
 		return nil, err
 	}
 
-	return GetBirdCatcher(conf)
+	bc, _ := GetBirdCatcher(conf, nil)
+	return bc.(*BirdCatcher), nil
 
 }
 
@@ -353,7 +355,8 @@ func TestUpdateRing(t *testing.T) {
 	bc.maxWeightChange = .9
 	outTxt, err := bc.updateRing()
 	require.Equal(t, err, nil)
-	require.Equal(t, len(outTxt), 2)
+	fmt.Println("xcxcxcxc: ", outTxt)
+	require.True(t, strings.Index(outTxt, "Reassigned 8 (50.00%) partitions.") > 0)
 
 	cmd = exec.Command("swift-ring-builder", ringBuilder, "search", "--device=sdb1", "--weight=1")
 	cmd.Stdout = &out
