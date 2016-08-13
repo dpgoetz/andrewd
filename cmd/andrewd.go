@@ -45,17 +45,15 @@ func RemovePid() error {
 	return os.RemoveAll(PidLoc)
 }
 
-func GetProcess(pid int) (*os.Process, error) {
-	if pid == 0 {
-		//var pid int
-		file, err := os.Open(PidLoc)
-		if err != nil {
-			return nil, err
-		}
-		_, err = fmt.Fscanf(file, "%d", &pid)
-		if err != nil {
-			return nil, err
-		}
+func GetProcess() (*os.Process, error) {
+	var pid int
+	file, err := os.Open(PidLoc)
+	if err != nil {
+		return nil, err
+	}
+	_, err = fmt.Fscanf(file, "%d", &pid)
+	if err != nil {
+		return nil, err
 	}
 	process, err := os.FindProcess(pid)
 	if err != nil {
@@ -80,7 +78,7 @@ func getConfig() string {
 }
 
 func StartDaemon() {
-	_, err := GetProcess(0)
+	_, err := GetProcess()
 	if err == nil {
 		return
 	}
@@ -117,14 +115,13 @@ func StartDaemon() {
 	io.Copy(os.Stdout, rdp)
 	if err = WritePid(cmd.Process.Pid); err != nil {
 		fmt.Println("Could not create pid: ", err)
-		process, _ := GetProcess(cmd.Process.Pid)
-		process.Signal(syscall.SIGTERM)
-		process.Wait()
+		cmd.Process.Signal(syscall.SIGTERM)
+		cmd.Process.Wait()
 	}
 }
 
 func StopDaemon() {
-	process, err := GetProcess(0)
+	process, err := GetProcess()
 	if err != nil {
 		fmt.Println("Error finding process: ", err)
 		return
@@ -161,7 +158,6 @@ func main() {
 		fmt.Fprintf(os.Stderr, "andrewd run [ARGS]\n")
 		runFlags.PrintDefaults()
 	}
-
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: andrewd [command] [args...]\n")
 		flag.PrintDefaults()
@@ -174,13 +170,11 @@ func main() {
 		runFlags.Usage()
 		fmt.Fprintf(os.Stderr, "\n")
 	}
-
 	flag.Parse()
 	if flag.NArg() < 1 {
 		flag.Usage()
 		return
 	}
-
 	switch flag.Arg(0) {
 	case "version":
 		fmt.Println(Version)

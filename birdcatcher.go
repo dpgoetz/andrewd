@@ -55,7 +55,31 @@ type ReconData struct {
 	dev     hummingbird.Device
 }
 
-var DbName = "birdcatcher.db" //"AUTH_dfg"
+type ReportDevice struct {
+	Ip         string
+	Port       int
+	Device     string
+	Weight     float64
+	Mounted    bool
+	Reachable  bool
+	LastUpdate time.Time
+}
+
+type ReportData struct {
+	TotalDevices      int
+	TotalWeight       float64
+	LastSuccessfulRun time.Time
+	UnmountedDevices  []ReportDevice
+	LastRingZeroes    []ReportDevice
+}
+
+type ipPort struct {
+	ip   string
+	port int
+	up   bool
+}
+
+var DbName = "birdcatcher.db"
 var ReportName = "unmounted_report.json"
 
 // TODO: just make these public in hbird somwhere
@@ -151,7 +175,6 @@ func (bc *BirdCatcher) gatherReconData(servers []ipPort) (devs []*ReconData, dow
 		go bc.reconGetUnmounted(s.ip, s.port, dataChan, doneServersChan)
 		serverCount += 1
 	}
-
 	for serverCount > 0 {
 		select {
 		case rd := <-dataChan:
@@ -163,7 +186,6 @@ func (bc *BirdCatcher) gatherReconData(servers []ipPort) (devs []*ReconData, dow
 			serverCount -= 1
 		}
 	}
-
 	return devs, downServers
 }
 
@@ -186,8 +208,9 @@ func (bc *BirdCatcher) getDb() (*sql.DB, error) {
 	}
 	sqlCreate := "CREATE TABLE IF NOT EXISTS Device (" +
 		"id INTEGER PRIMARY KEY, Ip VARCHAR(40) NOT NULL, " +
-		"Port INTEGER NOT NULL, Device VARCHAR(40) NOT NULL, InRing INTEGER NOT NULL, " +
-		"Weight FLOAT NOT NULL, Mounted INTEGER NOT NULL, Reachable INTEGER NOT NULL, " +
+		"Port INTEGER NOT NULL, Device VARCHAR(40) NOT NULL, " +
+		"InRing INTEGER NOT NULL, Weight FLOAT NOT NULL, " +
+		"Mounted INTEGER NOT NULL, Reachable INTEGER NOT NULL, " +
 		"CreateDate TIMESTAMP DEFAULT CURRENT_TIMESTAMP, " +
 		"LastUpdate TIMESTAMP DEFAULT CURRENT_TIMESTAMP);" +
 
@@ -201,8 +224,8 @@ func (bc *BirdCatcher) getDb() (*sql.DB, error) {
 		"Port INTEGER NOT NULL, Device VARCHAR(40) NOT NULL, " +
 		"Action VARCHAR(20) NOT NULL, CreateDate TIMESTAMP NOT NULL);" +
 
-		"CREATE TABLE IF NOT EXISTS Run (" +
-		"id INTEGER PRIMARY KEY, Success INTEGER, Notes TEXT" +
+		"CREATE TABLE IF NOT EXISTS RunLog (" +
+		"id INTEGER PRIMARY KEY, Success INTEGER, Notes TEXT, " +
 		"CreateDate TIMESTAMP DEFAULT CURRENT_TIMESTAMP);" +
 
 		"CREATE TRIGGER IF NOT EXISTS DeviceLastUpdate " +
@@ -215,7 +238,7 @@ func (bc *BirdCatcher) getDb() (*sql.DB, error) {
 		"AFTER UPDATE ON Device FOR EACH ROW " +
 		"BEGIN INSERT INTO DeviceLog (DeviceId, Mounted, Reachable) " +
 		"VALUES (OLD.id, OLD.Mounted, OLD.Reachable);END;"
-	_, err = db.Exec(sqlCreate)
+	_, err = tx.Exec(sqlCreate)
 	if err != nil {
 		return nil, err
 	}
@@ -224,12 +247,6 @@ func (bc *BirdCatcher) getDb() (*sql.DB, error) {
 	}
 	bc.db = db
 	return bc.db, nil
-}
-
-type ipPort struct {
-	ip   string
-	port int
-	up   bool
 }
 
 func (bc *BirdCatcher) getRingData() (map[string]hummingbird.Device, []ipPort) {
@@ -256,40 +273,32 @@ func (bc *BirdCatcher) getRingData() (map[string]hummingbird.Device, []ipPort) {
 }
 
 func (bc *BirdCatcher) needRingUpdate() bool {
-	bc.LogDebug("needRingUpdate running")
-
 	db, err := bc.getDb()
 	if err != nil {
 		bc.logger.Err(fmt.Sprintf("ERROR: getDb for needRingUpdate: %v", err))
-		bc.LogDebug("needRingUpdate 1111")
 		return false
 	}
-	//defer db.Close()
-	rows, err := db.Query("SELECT count(*), MAX(CreateDate) FROM RingAction")
+	rows, err := db.Query("SELECT CreateDate FROM RingAction " +
+		"ORDER BY CreateDate DESC LIMIT 1")
 	defer rows.Close()
 	if err != nil {
 		bc.logger.Err(fmt.Sprintf("ERROR: SELECT for needRingUpdate: %v", err))
-		bc.LogDebug("needRingUpdate 2222")
 		return false
 	}
-	var createDate time.Time
-	var cnt int
-	if err := rows.Scan(&cnt, &createDate); err != nil && cnt > 0 {
-		// TODO: what happens on first run?
-		bc.logger.Err(fmt.Sprintf("ERROR: parse for needRingUpdate: %v", err))
-		bc.LogDebug("needRingUpdate 3333: ", cnt, err, createDate)
-		return false
+	if rows.Next() {
+		var createDate time.Time
+		if err := rows.Scan(&createDate); err == nil {
+			return time.Since(createDate) > bc.ringUpdateFreq
+		}
 	}
-	return cnt == 0 || time.Since(createDate) > bc.ringUpdateFreq
+	return false
 }
 
 func (bc *BirdCatcher) updateDb() error {
-	bc.LogDebug("updateDb running")
 	db, err := bc.getDb()
 	if err != nil {
 		return err
 	}
-	//defer db.Close()
 	tx, err := db.Begin()
 	if err != nil {
 		return err
@@ -354,29 +363,27 @@ func (bc *BirdCatcher) updateDb() error {
 	if err = tx.Commit(); err != nil {
 		return err
 	}
+	bc.LogInfo("Update DB. %d unmounted. %d unreachable servers. %d new devices",
+		len(unmountedDevices), len(downServers), len(allRingDevices))
+
 	return nil
 }
 
 func (bc *BirdCatcher) getDevicesToUnmount() (badDevices []hummingbird.Device, err error) {
 	allRingDevices, _ := bc.getRingData()
 	totalWeight := float64(0)
-
 	for _, dev := range allRingDevices {
 		totalWeight += dev.Weight
 	}
-
 	db, err := bc.getDb()
 	if err != nil {
 		return nil, err
 	}
-	//defer db.Close()
 	now := time.Now()
 	rows, err := db.Query("SELECT Ip, Port, Device, Weight, Mounted, Reachable "+
 		"FROM Device WHERE (Mounted=0 OR Reachable=0) AND LastUpdate < ? "+
 		"ORDER BY LastUpdate", now.Add(-bc.maxAge))
 	defer rows.Close()
-	//var qryErrors []error
-	//var badDevices []hummingbird.Device
 
 	weightToUnmount := float64(0)
 	for rows.Next() {
@@ -390,7 +397,8 @@ func (bc *BirdCatcher) getDevicesToUnmount() (badDevices []hummingbird.Device, e
 		} else {
 			weightToUnmount += weight
 			if weightToUnmount < totalWeight*bc.maxWeightChange {
-				badDevices = append(badDevices, hummingbird.Device{Ip: ip, Port: port, Device: device, Weight: weight})
+				badDevices = append(badDevices, hummingbird.Device{
+					Ip: ip, Port: port, Device: device, Weight: weight})
 			}
 		}
 	}
@@ -398,7 +406,6 @@ func (bc *BirdCatcher) getDevicesToUnmount() (badDevices []hummingbird.Device, e
 }
 
 func (bc *BirdCatcher) updateRing() (outputStr string, err error) {
-	bc.LogDebug("updateRing running: %s", bc.ringBuilder)
 	badDevices, err := bc.getDevicesToUnmount()
 	var output []string
 	if err != nil {
@@ -414,6 +421,7 @@ func (bc *BirdCatcher) updateRing() (outputStr string, err error) {
 			return "", err
 		} else {
 			output = append(output, out.String())
+			bc.LogInfo("Setting weight of %s to zero", devKey)
 		}
 	}
 
@@ -421,11 +429,12 @@ func (bc *BirdCatcher) updateRing() (outputStr string, err error) {
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	if err := cmd.Run(); err != nil {
+		bc.LogInfo("Rebalancing ring failed")
 		return "", err
 	} else {
 		output = append(output, out.String())
+		bc.LogInfo("Rebalancing ring")
 	}
-
 	db, err := bc.getDb()
 	if err != nil {
 		return "", err
@@ -434,9 +443,6 @@ func (bc *BirdCatcher) updateRing() (outputStr string, err error) {
 	if err != nil {
 		return "", err
 	}
-	//defer db.Close()
-
-	bc.LogDebug("updateRing nserting: %d", len(badDevices))
 	now := time.Now()
 	for _, dev := range badDevices {
 		_, err = tx.Exec("INSERT INTO RingAction "+
@@ -450,11 +456,11 @@ func (bc *BirdCatcher) updateRing() (outputStr string, err error) {
 	if err = tx.Commit(); err != nil {
 		return "", err
 	}
+	bc.LogInfo("Removed %s devices from ring", len(badDevices))
 	return strings.Join(output, "\n"), nil
 }
 
 func (bc *BirdCatcher) logRun(success bool, errText string) error {
-
 	db, err := bc.getDb()
 	if err != nil {
 		return err
@@ -463,7 +469,7 @@ func (bc *BirdCatcher) logRun(success bool, errText string) error {
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec("INSERT INTO Run "+
+	_, err = tx.Exec("INSERT INTO RunLog "+
 		"(Success, Notes) VALUES "+
 		"(?,?)", success, errText)
 	if err != nil {
@@ -475,26 +481,7 @@ func (bc *BirdCatcher) logRun(success bool, errText string) error {
 	return nil
 }
 
-type ReportDevice struct {
-	Ip         string
-	Port       int
-	Device     string
-	Weight     float64
-	Mounted    bool
-	Reachable  bool
-	LastUpdate time.Time
-}
-
-type ReportData struct {
-	TotalDevices      int
-	TotalWeight       float64
-	LastSuccessfulRun time.Time
-	UnmountedDevices  []ReportDevice
-	LastRingZeroes    []ReportDevice
-}
-
 func (bc *BirdCatcher) getReportData() (*ReportData, error) {
-
 	db, err := bc.getDb()
 	if err != nil {
 		return nil, err
@@ -552,6 +539,20 @@ func (bc *BirdCatcher) getReportData() (*ReportData, error) {
 		}
 	}
 	rows.Close()
+
+	rows, err = db.Query("SELECT CreateDate FROM RunLog " +
+		"ORDER BY CreateDate DESC LIMIT 1")
+	if err != nil {
+		bc.logger.Err(fmt.Sprintf("ERROR: SELECT for RunLog report: %v", err))
+		return nil, err
+	}
+	if rows.Next() {
+		var createDate time.Time
+		if err := rows.Scan(&createDate); err == nil {
+			rData.LastSuccessfulRun = createDate
+		}
+	}
+	rows.Close()
 	return &rData, nil
 }
 
@@ -574,11 +575,15 @@ func (r *BirdCatcher) LogError(format string, args ...interface{}) {
 }
 
 func (r *BirdCatcher) LogDebug(format string, args ...interface{}) {
-	fmt.Println(fmt.Sprintf(format, args...))
+	r.logger.Debug(fmt.Sprintf(format, args...))
+}
+
+func (r *BirdCatcher) LogInfo(format string, args ...interface{}) {
+	r.logger.Info(fmt.Sprintf(format, args...))
 }
 
 func (bc *BirdCatcher) Run() {
-	bc.logger.Info("AndrewD Starting Run")
+	bc.LogInfo("AndrewD Starting Run")
 
 	err := bc.updateDb()
 	var msg string
@@ -592,7 +597,6 @@ func (bc *BirdCatcher) Run() {
 	bc.logRun(err == nil, msg)
 	bc.db.Close()
 	bc.db = nil
-
 }
 
 func (bc *BirdCatcher) RunForever() {
@@ -628,18 +632,17 @@ func GetBirdCatcher(serverconf hummingbird.Config, flags *flag.FlagSet) (humming
 	ringUpdateFreq := serverconf.GetInt("andrewd", "ring_update_frequency", 259200)
 	runFreq := serverconf.GetInt("andrewd", "run_frequency", 3600)
 
-	bc := &BirdCatcher{
+	bc := BirdCatcher{
+		oring:           objRing,
 		workingDir:      workingDir,
 		reportDir:       reportDir,
 		maxAge:          maxAge,
 		maxWeightChange: maxWeightChange,
 		ringBuilder:     ringBuilder,
 		ringUpdateFreq:  time.Duration(ringUpdateFreq) * time.Second,
-		runFreq:         time.Duration(runFreq) * time.Second}
-
-	bc.oring = objRing
-	bc.logger = hummingbird.SetupLogger(serverconf.GetDefault(
-		"andrewd", "log_facility", "LOG_LOCAL0"), "birdcatcher", "")
-	return bc, nil
-
+		runFreq:         time.Duration(runFreq) * time.Second,
+		logger: hummingbird.SetupLogger(serverconf.GetDefault(
+			"andrewd", "log_facility", "LOG_LOCAL0"), "birdcatcher", ""),
+	}
+	return &bc, nil
 }

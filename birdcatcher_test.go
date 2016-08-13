@@ -428,3 +428,32 @@ func TestProduceReport(t *testing.T) {
 	require.Equal(t, len(rData.UnmountedDevices), 1)
 	require.Equal(t, len(rData.LastRingZeroes), 0)
 }
+
+func TestNeedRingUpdate(t *testing.T) {
+	t.Parallel()
+
+	bc, _ := getBc()
+	defer closeBc(bc)
+	db, _ := bc.getDb()
+	defer db.Close()
+	tx, err := db.Begin()
+	require.Equal(t, err, nil)
+
+	require.False(t, bc.needRingUpdate())
+
+	now := time.Now()
+	_, err = tx.Exec("INSERT INTO RingAction "+
+		"(Ip, Port, Device, Action, CreateDate) VALUES"+
+		"(?,?,?,?,?)", "1.2.3.4", 6000, "sdb1", "ZEROED", now)
+	_, err = tx.Exec("INSERT INTO RingAction "+
+		"(Ip, Port, Device, Action, CreateDate) VALUES"+
+		"(?,?,?,?,?)", "1.2.3.4", 6000, "sdb1", "ZEROED", now)
+	require.Equal(t, err, nil)
+	require.Equal(t, tx.Commit(), nil)
+	time.Sleep(10000)
+
+	bc.ringUpdateFreq = 10
+	require.True(t, bc.needRingUpdate())
+	bc.ringUpdateFreq = 1000000000
+	require.False(t, bc.needRingUpdate())
+}
