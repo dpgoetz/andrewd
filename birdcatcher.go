@@ -26,6 +26,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -45,6 +46,7 @@ type BirdCatcher struct {
 	ringUpdateFreq  time.Duration
 	runFreq         time.Duration
 	db              *sql.DB
+	dbl             sync.Mutex
 }
 
 type ReconData struct {
@@ -107,7 +109,6 @@ func headers2Map(headers http.Header) map[string]string {
 
 func (bc *BirdCatcher) doHealthCheck(ip string, port int) (ok bool) {
 	return true
-
 }
 
 func (bc *BirdCatcher) reconGetUnmounted(ip string, port int,
@@ -165,7 +166,6 @@ func (bc *BirdCatcher) serverId(ip string, port int) string {
 }
 
 func (bc *BirdCatcher) gatherReconData(servers []ipPort) (devs []*ReconData, downServers map[string]ipPort) {
-
 	serverCount := 0
 	dataChan := make(chan *ReconData)
 	doneServersChan := make(chan ipPort)
@@ -191,7 +191,8 @@ func (bc *BirdCatcher) gatherReconData(servers []ipPort) (devs []*ReconData, dow
 
 func (bc *BirdCatcher) getDb() (*sql.DB, error) {
 	// TODO think i need to get this to return a transaction
-	// this is not thread safe but i don't think i care
+	bc.dbl.Lock()
+	defer bc.dbl.Unlock()
 	if bc.db != nil {
 		if err := bc.db.Ping(); err == nil {
 			return bc.db, nil
@@ -206,6 +207,7 @@ func (bc *BirdCatcher) getDb() (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer tx.Rollback()
 	sqlCreate := "CREATE TABLE IF NOT EXISTS Device (" +
 		"id INTEGER PRIMARY KEY, Ip VARCHAR(40) NOT NULL, " +
 		"Port INTEGER NOT NULL, Device VARCHAR(40) NOT NULL, " +
@@ -250,7 +252,6 @@ func (bc *BirdCatcher) getDb() (*sql.DB, error) {
 }
 
 func (bc *BirdCatcher) getRingData() (map[string]hummingbird.Device, []ipPort) {
-
 	allRingDevices := make(map[string]hummingbird.Device)
 	var allWeightedServers []ipPort
 	weightedServers := make(map[string]bool)
@@ -269,7 +270,6 @@ func (bc *BirdCatcher) getRingData() (map[string]hummingbird.Device, []ipPort) {
 		}
 	}
 	return allRingDevices, allWeightedServers
-
 }
 
 func (bc *BirdCatcher) needRingUpdate() bool {
@@ -295,14 +295,6 @@ func (bc *BirdCatcher) needRingUpdate() bool {
 }
 
 func (bc *BirdCatcher) updateDb() error {
-	db, err := bc.getDb()
-	if err != nil {
-		return err
-	}
-	tx, err := db.Begin()
-	if err != nil {
-		return err
-	}
 	allRingDevices, allWeightedServers := bc.getRingData()
 	unmountedDevices := make(map[string]bool)
 
@@ -312,6 +304,16 @@ func (bc *BirdCatcher) updateDb() error {
 			unmountedDevices[bc.deviceId(rData.ip, rData.port, rData.Device)] = rData.Mounted
 		}
 	}
+
+	db, err := bc.getDb()
+	if err != nil {
+		return err
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 	rows, _ := tx.Query("SELECT Ip, Port, Device, Weight, Mounted FROM Device")
 	defer rows.Close()
 	var qryErrors []error
@@ -443,6 +445,7 @@ func (bc *BirdCatcher) updateRing() (outputStr string, err error) {
 	if err != nil {
 		return "", err
 	}
+	defer tx.Rollback()
 	now := time.Now()
 	for _, dev := range badDevices {
 		_, err = tx.Exec("INSERT INTO RingAction "+
@@ -469,6 +472,7 @@ func (bc *BirdCatcher) logRun(success bool, errText string) error {
 	if err != nil {
 		return err
 	}
+	defer tx.Rollback()
 	_, err = tx.Exec("INSERT INTO RunLog "+
 		"(Success, Notes) VALUES "+
 		"(?,?)", success, errText)
@@ -607,7 +611,6 @@ func (bc *BirdCatcher) RunForever() {
 }
 
 func GetBirdCatcher(serverconf hummingbird.Config, flags *flag.FlagSet) (hummingbird.Daemon, error) {
-
 	hashPathPrefix, hashPathSuffix, err := hummingbird.GetHashPrefixAndSuffix()
 	if err != nil {
 		fmt.Println("Unable to load hash path prefix and suffix:", err)

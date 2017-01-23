@@ -60,7 +60,6 @@ func closeBc(bc *BirdCatcher) {
 }
 
 func getFakeServer(data string) *httptest.Server {
-
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,
 		r *http.Request) {
 
@@ -110,7 +109,6 @@ func TestGetReconUmounted(t *testing.T) {
 	require.Equal(t, ipp.ip, host)
 	require.Equal(t, ipp.up, true)
 	require.Equal(t, handlerRan, true)
-
 }
 
 type FakeRing struct {
@@ -197,7 +195,6 @@ func TestGetRingData(t *testing.T) {
 		devMap[bc.deviceId(dev.Ip, dev.Port, dev.Device)] = true
 	}
 	require.Equal(t, len(devMap), 4)
-
 }
 
 func TestPopulateDbWithRing(t *testing.T) {
