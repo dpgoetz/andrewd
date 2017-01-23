@@ -36,7 +36,7 @@ const ONE_DAY = 86400
 
 type BirdCatcher struct {
 	oring           hummingbird.Ring
-	logger          hummingbird.SysLogLike
+	logger          hummingbird.LowLevelLogger
 	workingDir      string
 	reportDir       string
 	maxAge          time.Duration
@@ -632,6 +632,11 @@ func GetBirdCatcher(serverconf hummingbird.Config, flags *flag.FlagSet) (humming
 	ringUpdateFreq := serverconf.GetInt("andrewd", "ring_update_frequency", 259200)
 	runFreq := serverconf.GetInt("andrewd", "run_frequency", 3600)
 
+	logger, err := hummingbird.SetupLogger(serverconf, flags, "andrewd", "birdcatcher")
+	if err != nil {
+		panic(fmt.Sprintf("Error setting up logger: %v", err))
+	}
+
 	bc := BirdCatcher{
 		oring:           objRing,
 		workingDir:      workingDir,
@@ -641,8 +646,7 @@ func GetBirdCatcher(serverconf hummingbird.Config, flags *flag.FlagSet) (humming
 		ringBuilder:     ringBuilder,
 		ringUpdateFreq:  time.Duration(ringUpdateFreq) * time.Second,
 		runFreq:         time.Duration(runFreq) * time.Second,
-		logger: hummingbird.SetupLogger(serverconf.GetDefault(
-			"andrewd", "log_facility", "LOG_LOCAL0"), "birdcatcher", ""),
+		logger:          logger,
 	}
 	return &bc, nil
 }
