@@ -396,8 +396,7 @@ func (bc *BirdCatcher) getDevicesToUnmount() (badDevices []hummingbird.Device, e
 	}
 	now := time.Now()
 	rows, err := db.Query("SELECT ip, port, device, weight, mounted, reachable FROM device WHERE "+
-		"(mounted=0 OR reachable=0) AND last_update < ? ORDER BY last_update",
-		now.Add(-bc.maxAge))
+		"(mounted=0 OR reachable=0) AND last_update < ? ORDER BY last_update", now.Add(-bc.maxAge))
 	defer rows.Close()
 
 	weightToUnmount := float64(0)
