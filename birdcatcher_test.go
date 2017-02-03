@@ -17,6 +17,7 @@ package andrewd
 
 import (
 	"bytes"
+	"flag"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -50,7 +51,7 @@ func getBc(settings ...string) (*BirdCatcher, error) {
 		return nil, err
 	}
 
-	bc, _ := GetBirdCatcher(conf, nil)
+	bc, _ := GetBirdCatcher(conf, &flag.FlagSet{})
 	return bc.(*BirdCatcher), nil
 
 }
@@ -60,7 +61,6 @@ func closeBc(bc *BirdCatcher) {
 }
 
 func getFakeServer(data string) *httptest.Server {
-
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,
 		r *http.Request) {
 
@@ -110,7 +110,6 @@ func TestGetReconUmounted(t *testing.T) {
 	require.Equal(t, ipp.ip, host)
 	require.Equal(t, ipp.up, true)
 	require.Equal(t, handlerRan, true)
-
 }
 
 type FakeRing struct {
@@ -197,7 +196,6 @@ func TestGetRingData(t *testing.T) {
 		devMap[bc.deviceId(dev.Ip, dev.Port, dev.Device)] = true
 	}
 	require.Equal(t, len(devMap), 4)
-
 }
 
 func TestPopulateDbWithRing(t *testing.T) {
@@ -227,7 +225,7 @@ func TestPopulateDbWithRing(t *testing.T) {
 
 	require.Equal(t, err, nil)
 
-	rows, _ := db.Query("SELECT Ip, Port, Device, Weight, Mounted, Reachable FROM Device")
+	rows, _ := db.Query("SELECT ip, port, device, weight, mounted, reachable FROM device")
 	devMap := make(map[string]float64)
 	cnt := 0
 	for rows.Next() {
@@ -277,15 +275,15 @@ func TestUpdateDb(t *testing.T) {
 	tx, err := db.Begin()
 	require.Equal(t, err, nil)
 
-	_, err = tx.Exec("INSERT INTO Device "+
-		"(Ip, Port, Device, InRing, Weight, Mounted, Reachable) VALUES"+
+	_, err = tx.Exec("INSERT INTO device "+
+		"(ip, port, device, in_ring, weight, mounted, reachable) VALUES"+
 		"(?,?,?,?,?,?,?)", host, port, "sdb1", true, 2.3, true, true)
 	require.Equal(t, err, nil)
 	require.Equal(t, tx.Commit(), nil)
 
 	bc.updateDb()
 
-	rows, _ := db.Query("SELECT Ip, Port, Device, Weight, Mounted, Reachable FROM Device")
+	rows, _ := db.Query("SELECT ip, port, device, weight, mounted, reachable FROM device")
 	cnt := 0
 	for rows.Next() {
 		var ip, device string
@@ -317,11 +315,11 @@ func TestUpdateRing(t *testing.T) {
 	require.Equal(t, err, nil)
 
 	now := time.Now()
-	_, err = tx.Exec("INSERT INTO Device "+
-		"(Ip, Port, Device, InRing, Weight, Mounted, Reachable, LastUpdate) VALUES"+
+	_, err = tx.Exec("INSERT INTO device "+
+		"(ip, port, device, in_ring, weight, mounted, reachable, last_update) VALUES"+
 		"(?,?,?,?,?,?,?,?)", "1.2.3.4", 6000, "sdb1", true, 2.3, false, true, now.AddDate(0, 0, -8))
 	_, err = tx.Exec("INSERT INTO Device "+
-		"(Ip, Port, Device, InRing, Weight, Mounted, Reachable, LastUpdate) VALUES"+
+		"(ip, port, device, in_ring, weight, mounted, reachable, last_update) VALUES"+
 		"(?,?,?,?,?,?,?,?)", "1.2.3.4", 6000, "sdb2", true, 2.3, false, true, now.AddDate(0, 0, -3))
 	require.Equal(t, err, nil)
 	require.Equal(t, tx.Commit(), nil)
@@ -367,7 +365,7 @@ func TestUpdateRing(t *testing.T) {
 	cmd = exec.Command("swift-ring-builder", ringBuilder, "search", "--device=sdb2", "--weight=1")
 	require.Equal(t, cmd.Run(), nil)
 
-	rows, err := db.Query("SELECT count(*) FROM RingAction WHERE Device=? and Action=?", "sdb1", "ZEROED")
+	rows, err := db.Query("SELECT count(*) FROM ring_action WHERE device=? and action=?", "sdb1", "ZEROED")
 	var cnt int
 	if rows != nil {
 		rows.Next()
@@ -375,7 +373,7 @@ func TestUpdateRing(t *testing.T) {
 		require.Equal(t, cnt, 1)
 	}
 
-	rows, err = db.Query("SELECT count(*) FROM RingAction WHERE Device=? and Action=?", "sdb2", "ZEROED")
+	rows, err = db.Query("SELECT count(*) FROM ring_action WHERE device=? and action=?", "sdb2", "ZEROED")
 	if rows != nil {
 		rows.Next()
 		rows.Scan(&cnt)
@@ -399,8 +397,8 @@ func TestProduceReport(t *testing.T) {
 	tx, err := db.Begin()
 	require.Equal(t, err, nil)
 
-	_, err = tx.Exec("INSERT INTO Device "+
-		"(Ip, Port, Device, InRing, Weight, Mounted, Reachable) VALUES"+
+	_, err = tx.Exec("INSERT INTO device "+
+		"(ip, port, device, in_ring, weight, mounted, reachable) VALUES"+
 		"(?,?,?,?,?,?,?)", "1.2.3.4", 6000, "sdb1", true, 2.3, true, true)
 	require.Equal(t, err, nil)
 	require.Equal(t, tx.Commit(), nil)
@@ -415,8 +413,8 @@ func TestProduceReport(t *testing.T) {
 	tx, err = db.Begin()
 	require.Equal(t, err, nil)
 
-	_, err = tx.Exec("INSERT INTO Device "+
-		"(Ip, Port, Device, InRing, Weight, Mounted, Reachable) VALUES"+
+	_, err = tx.Exec("INSERT INTO device "+
+		"(ip, port, device, in_ring, weight, mounted, reachable) VALUES"+
 		"(?,?,?,?,?,?,?)", "1.2.3.4", 6000, "sdb2", true, 0, false, true)
 	require.Equal(t, err, nil)
 	require.Equal(t, tx.Commit(), nil)
@@ -442,11 +440,11 @@ func TestNeedRingUpdate(t *testing.T) {
 	require.False(t, bc.needRingUpdate())
 
 	now := time.Now()
-	_, err = tx.Exec("INSERT INTO RingAction "+
-		"(Ip, Port, Device, Action, CreateDate) VALUES"+
+	_, err = tx.Exec("INSERT INTO ring_action "+
+		"(ip, port, device, action, create_date) VALUES"+
 		"(?,?,?,?,?)", "1.2.3.4", 6000, "sdb1", "ZEROED", now)
-	_, err = tx.Exec("INSERT INTO RingAction "+
-		"(Ip, Port, Device, Action, CreateDate) VALUES"+
+	_, err = tx.Exec("INSERT INTO ring_action "+
+		"(ip, port, device, action, create_date) VALUES"+
 		"(?,?,?,?,?)", "1.2.3.4", 6000, "sdb1", "ZEROED", now)
 	require.Equal(t, err, nil)
 	require.Equal(t, tx.Commit(), nil)

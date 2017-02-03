@@ -26,6 +26,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -45,6 +46,7 @@ type BirdCatcher struct {
 	ringUpdateFreq  time.Duration
 	runFreq         time.Duration
 	db              *sql.DB
+	dbl             sync.Mutex
 }
 
 type ReconData struct {
@@ -107,7 +109,6 @@ func headers2Map(headers http.Header) map[string]string {
 
 func (bc *BirdCatcher) doHealthCheck(ip string, port int) (ok bool) {
 	return true
-
 }
 
 func (bc *BirdCatcher) reconGetUnmounted(ip string, port int,
@@ -165,7 +166,6 @@ func (bc *BirdCatcher) serverId(ip string, port int) string {
 }
 
 func (bc *BirdCatcher) gatherReconData(servers []ipPort) (devs []*ReconData, downServers map[string]ipPort) {
-
 	serverCount := 0
 	dataChan := make(chan *ReconData)
 	doneServersChan := make(chan ipPort)
@@ -190,8 +190,8 @@ func (bc *BirdCatcher) gatherReconData(servers []ipPort) (devs []*ReconData, dow
 }
 
 func (bc *BirdCatcher) getDb() (*sql.DB, error) {
-	// TODO think i need to get this to return a transaction
-	// this is not thread safe but i don't think i care
+	bc.dbl.Lock()
+	defer bc.dbl.Unlock()
 	if bc.db != nil {
 		if err := bc.db.Ping(); err == nil {
 			return bc.db, nil
@@ -206,38 +206,58 @@ func (bc *BirdCatcher) getDb() (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	sqlCreate := "CREATE TABLE IF NOT EXISTS Device (" +
-		"id INTEGER PRIMARY KEY, Ip VARCHAR(40) NOT NULL, " +
-		"Port INTEGER NOT NULL, Device VARCHAR(40) NOT NULL, " +
-		"InRing INTEGER NOT NULL, Weight FLOAT NOT NULL, " +
-		"Mounted INTEGER NOT NULL, Reachable INTEGER NOT NULL, " +
-		"CreateDate TIMESTAMP DEFAULT CURRENT_TIMESTAMP, " +
-		"LastUpdate TIMESTAMP DEFAULT CURRENT_TIMESTAMP);" +
+	defer tx.Rollback()
+	sqlCreate := `
+		CREATE TABLE IF NOT EXISTS device ( 
+			id INTEGER PRIMARY KEY,
+			ip VARCHAR(40) NOT NULL,  
+			port INTEGER NOT NULL,
+			device VARCHAR(40) NOT NULL,  
+			in_ring INTEGER NOT NULL,
+			weight FLOAT NOT NULL,  
+			mounted INTEGER NOT NULL,
+			reachable INTEGER NOT NULL,  
+			create_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,  
+			last_update TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		); 
 
-		"CREATE TABLE IF NOT EXISTS DeviceLog (" +
-		"DeviceId INTEGER, Mounted INTEGER, Reachable INTEGER " +
-		"CreateDate TIMESTAMP DEFAULT CURRENT_TIMESTAMP, Notes VARCHAR(255), " +
-		"FOREIGN KEY (DeviceId) REFERENCES Device(id));" +
+		CREATE TABLE IF NOT EXISTS device_log ( 
+			deviceId INTEGER,
+			mounted INTEGER,
+			reachable INTEGER  
+			create_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			notes VARCHAR(255),  
+			FOREIGN KEY (deviceId) REFERENCES device(id)
+		); 
 
-		"CREATE TABLE IF NOT EXISTS RingAction (" +
-		"id INTEGER PRIMARY KEY, Ip VARCHAR(40) NOT NULL, " +
-		"Port INTEGER NOT NULL, Device VARCHAR(40) NOT NULL, " +
-		"Action VARCHAR(20) NOT NULL, CreateDate TIMESTAMP NOT NULL);" +
+		CREATE TABLE IF NOT EXISTS ring_action ( 
+			id INTEGER PRIMARY KEY,
+			ip VARCHAR(40) NOT NULL,  
+			port INTEGER NOT NULL,
+			device VARCHAR(40) NOT NULL,  
+			action VARCHAR(20) NOT NULL,
+			create_date TIMESTAMP NOT NULL
+		); 
 
-		"CREATE TABLE IF NOT EXISTS RunLog (" +
-		"id INTEGER PRIMARY KEY, Success INTEGER, Notes TEXT, " +
-		"CreateDate TIMESTAMP DEFAULT CURRENT_TIMESTAMP);" +
+		CREATE TABLE IF NOT EXISTS run_log ( 
+			id INTEGER PRIMARY KEY,
+			success INTEGER, notes TEXT,  
+			create_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		); 
 
-		"CREATE TRIGGER IF NOT EXISTS DeviceLastUpdate " +
-		"AFTER UPDATE ON Device FOR EACH ROW " +
-		"BEGIN UPDATE Device SET LastUpdate = CURRENT_TIMESTAMP " +
-		"WHERE id = OLD.id AND " +
-		"(Mounted != OLD.Mounted OR Reachable != OLD.Reachable);END;" +
+		CREATE TRIGGER IF NOT EXISTS device_last_update 
+			AFTER UPDATE ON device FOR EACH ROW  
+			BEGIN
+				UPDATE device SET last_update = CURRENT_TIMESTAMP  
+				WHERE id = OLD.id AND (mounted != OLD.mounted OR reachable != OLD.reachable);
+			END; 
 
-		"CREATE TRIGGER IF NOT EXISTS DeviceLogger " +
-		"AFTER UPDATE ON Device FOR EACH ROW " +
-		"BEGIN INSERT INTO DeviceLog (DeviceId, Mounted, Reachable) " +
-		"VALUES (OLD.id, OLD.Mounted, OLD.Reachable);END;"
+		CREATE TRIGGER IF NOT EXISTS device_logger  
+			AFTER UPDATE ON device FOR EACH ROW  
+			BEGIN
+				INSERT INTO device_log (deviceId, mounted, reachable)  
+				VALUES (OLD.id, OLD.mounted, OLD.reachable);
+			END;`
 	_, err = tx.Exec(sqlCreate)
 	if err != nil {
 		return nil, err
@@ -250,7 +270,6 @@ func (bc *BirdCatcher) getDb() (*sql.DB, error) {
 }
 
 func (bc *BirdCatcher) getRingData() (map[string]hummingbird.Device, []ipPort) {
-
 	allRingDevices := make(map[string]hummingbird.Device)
 	var allWeightedServers []ipPort
 	weightedServers := make(map[string]bool)
@@ -269,7 +288,6 @@ func (bc *BirdCatcher) getRingData() (map[string]hummingbird.Device, []ipPort) {
 		}
 	}
 	return allRingDevices, allWeightedServers
-
 }
 
 func (bc *BirdCatcher) needRingUpdate() bool {
@@ -278,8 +296,7 @@ func (bc *BirdCatcher) needRingUpdate() bool {
 		bc.logger.Err(fmt.Sprintf("ERROR: getDb for needRingUpdate: %v", err))
 		return false
 	}
-	rows, err := db.Query("SELECT CreateDate FROM RingAction " +
-		"ORDER BY CreateDate DESC LIMIT 1")
+	rows, err := db.Query("SELECT create_date FROM ring_action ORDER BY create_date DESC LIMIT 1")
 	defer rows.Close()
 	if err != nil {
 		bc.logger.Err(fmt.Sprintf("ERROR: SELECT for needRingUpdate: %v", err))
@@ -295,14 +312,6 @@ func (bc *BirdCatcher) needRingUpdate() bool {
 }
 
 func (bc *BirdCatcher) updateDb() error {
-	db, err := bc.getDb()
-	if err != nil {
-		return err
-	}
-	tx, err := db.Begin()
-	if err != nil {
-		return err
-	}
 	allRingDevices, allWeightedServers := bc.getRingData()
 	unmountedDevices := make(map[string]bool)
 
@@ -312,7 +321,17 @@ func (bc *BirdCatcher) updateDb() error {
 			unmountedDevices[bc.deviceId(rData.ip, rData.port, rData.Device)] = rData.Mounted
 		}
 	}
-	rows, _ := tx.Query("SELECT Ip, Port, Device, Weight, Mounted FROM Device")
+
+	db, err := bc.getDb()
+	if err != nil {
+		return err
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	rows, _ := tx.Query("SELECT ip, port, device, weight, mounted FROM device")
 	defer rows.Close()
 	var qryErrors []error
 	for rows.Next() {
@@ -331,15 +350,13 @@ func (bc *BirdCatcher) updateDb() error {
 			_, notReachable := downServers[bc.serverId(ip, port)]
 			if !inRing {
 				//TODO- handle errors
-				_, err = tx.Exec("UPDATE Device SET InRing=0 "+
-					"WHERE Ip=? AND Port=? AND Device=?", ip, port, device)
+				_, err = tx.Exec("UPDATE device SET in_ring=0 WHERE ip=? AND port=? AND device=?",
+					ip, port, device)
 			} else {
 				if !notReachable {
 					if rDev.Weight != weight || mounted == inUnmounted {
-						_, err = tx.Exec("UPDATE Device SET "+
-							"Weight=?, Mounted=? "+
-							"WHERE Ip=? AND Port=? AND Device=?",
-							rDev.Weight, !inUnmounted, ip, port, device)
+						_, err = tx.Exec("UPDATE device SET weight=?, mounted=? WHERE ip=? AND port=? "+
+							"AND device=?", rDev.Weight, !inUnmounted, ip, port, device)
 					}
 				}
 			}
@@ -347,18 +364,16 @@ func (bc *BirdCatcher) updateDb() error {
 		}
 	}
 	for _, ipp := range downServers {
-		_, err = tx.Exec("UPDATE Device SET Reachable=0 "+
-			"WHERE Ip=? AND Port=?", ipp.ip, ipp.port)
+		_, err = tx.Exec("UPDATE device SET reachable=0 "+
+			"WHERE ip=? AND port=?", ipp.ip, ipp.port)
 	}
 	for _, rDev := range allRingDevices {
 		dKey := bc.deviceId(rDev.Ip, rDev.Port, rDev.Device)
 		_, isUnmounted := unmountedDevices[dKey]
 		_, notReachable := downServers[bc.serverId(rDev.Ip, rDev.Port)]
-		_, err = tx.Exec("INSERT INTO Device "+
-			"(Ip, Port, Device, InRing, Weight, Mounted, Reachable) VALUES"+
-			"(?,?,?,?,?,?,?)",
-			rDev.Ip, rDev.Port, rDev.Device,
-			true, rDev.Weight, !isUnmounted, !notReachable)
+		_, err = tx.Exec("INSERT INTO device (ip, port, device, in_ring, weight, mounted, reachable) "+
+			"VALUES (?,?,?,?,?,?,?)",
+			rDev.Ip, rDev.Port, rDev.Device, true, rDev.Weight, !isUnmounted, !notReachable)
 	}
 	if err = tx.Commit(); err != nil {
 		return err
@@ -380,9 +395,8 @@ func (bc *BirdCatcher) getDevicesToUnmount() (badDevices []hummingbird.Device, e
 		return nil, err
 	}
 	now := time.Now()
-	rows, err := db.Query("SELECT Ip, Port, Device, Weight, Mounted, Reachable "+
-		"FROM Device WHERE (Mounted=0 OR Reachable=0) AND LastUpdate < ? "+
-		"ORDER BY LastUpdate", now.Add(-bc.maxAge))
+	rows, err := db.Query("SELECT ip, port, device, weight, mounted, reachable FROM device WHERE "+
+		"(mounted=0 OR reachable=0) AND last_update < ? ORDER BY last_update", now.Add(-bc.maxAge))
 	defer rows.Close()
 
 	weightToUnmount := float64(0)
@@ -443,11 +457,11 @@ func (bc *BirdCatcher) updateRing() (outputStr string, err error) {
 	if err != nil {
 		return "", err
 	}
+	defer tx.Rollback()
 	now := time.Now()
 	for _, dev := range badDevices {
-		_, err = tx.Exec("INSERT INTO RingAction "+
-			"(Ip, Port, Device, Action, CreateDate) VALUES "+
-			"(?,?,?,?,?)", dev.Ip, dev.Port, dev.Device, "ZEROED", now)
+		_, err = tx.Exec("INSERT INTO ring_action (ip, port, device, action, create_date) "+
+			"VALUES (?,?,?,?,?)", dev.Ip, dev.Port, dev.Device, "ZEROED", now)
 		if err != nil {
 			return "", err
 
@@ -469,9 +483,8 @@ func (bc *BirdCatcher) logRun(success bool, errText string) error {
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec("INSERT INTO RunLog "+
-		"(Success, Notes) VALUES "+
-		"(?,?)", success, errText)
+	defer tx.Rollback()
+	_, err = tx.Exec("INSERT INTO run_log (success, notes) VALUES (?,?)", success, errText)
 	if err != nil {
 		return err
 	}
@@ -486,7 +499,7 @@ func (bc *BirdCatcher) getReportData() (*ReportData, error) {
 	if err != nil {
 		return nil, err
 	}
-	rows, err := db.Query("SELECT count(*), SUM(Weight) FROM Device WHERE InRing=1")
+	rows, err := db.Query("SELECT count(*), SUM(weight) FROM device WHERE in_ring=1")
 	defer rows.Close()
 	var numDevices int
 	var totalWeight float64
@@ -499,8 +512,8 @@ func (bc *BirdCatcher) getReportData() (*ReportData, error) {
 		TotalDevices: numDevices,
 		TotalWeight:  totalWeight}
 
-	rows, err = db.Query("SELECT Ip, Port, Device, Weight, Mounted, Reachable, LastUpdate " +
-		"FROM Device WHERE (Mounted=0 OR Reachable=0) ORDER BY LastUpdate")
+	rows, err = db.Query("SELECT ip, port, device, weight, mounted, reachable, last_update " +
+		"FROM device WHERE (mounted=0 OR reachable=0) ORDER BY last_update")
 
 	for rows.Next() {
 		var ip, device string
@@ -520,9 +533,8 @@ func (bc *BirdCatcher) getReportData() (*ReportData, error) {
 					Mounted: mounted, Reachable: reachable, LastUpdate: lastUpdate})
 		}
 	}
-	rows, err = db.Query("SELECT Ip, Port, Device, Action, CreateDate " +
-		"FROM RingAction WHERE " +
-		"CreateDate = (SELECT MAX(CreateDate) FROM RingAction) ORDER BY CreateDate")
+	rows, err = db.Query("SELECT ip, port, device, action, create_date FROM ring_action WHERE " +
+		"create_date = (SELECT MAX(create_date) FROM ring_action) ORDER BY create_date")
 
 	for rows.Next() {
 		var ip, device, action string
@@ -540,10 +552,9 @@ func (bc *BirdCatcher) getReportData() (*ReportData, error) {
 	}
 	rows.Close()
 
-	rows, err = db.Query("SELECT CreateDate FROM RunLog " +
-		"ORDER BY CreateDate DESC LIMIT 1")
+	rows, err = db.Query("SELECT create_date FROM run_log ORDER BY create_date DESC LIMIT 1")
 	if err != nil {
-		bc.logger.Err(fmt.Sprintf("ERROR: SELECT for RunLog report: %v", err))
+		bc.logger.Err(fmt.Sprintf("ERROR: SELECT for run_log report: %v", err))
 		return nil, err
 	}
 	if rows.Next() {
@@ -607,7 +618,6 @@ func (bc *BirdCatcher) RunForever() {
 }
 
 func GetBirdCatcher(serverconf hummingbird.Config, flags *flag.FlagSet) (hummingbird.Daemon, error) {
-
 	hashPathPrefix, hashPathSuffix, err := hummingbird.GetHashPrefixAndSuffix()
 	if err != nil {
 		fmt.Println("Unable to load hash path prefix and suffix:", err)
