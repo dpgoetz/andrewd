@@ -47,6 +47,7 @@ type BirdCatcher struct {
 	runFreq         time.Duration
 	db              *sql.DB
 	dbl             sync.Mutex
+	doNotRebalance  bool
 }
 
 type ReconData struct {
@@ -439,15 +440,19 @@ func (bc *BirdCatcher) updateRing() (outputStr string, err error) {
 		}
 	}
 
-	cmd := exec.Command("swift-ring-builder", bc.ringBuilder, "rebalance")
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	if err := cmd.Run(); err != nil {
-		bc.LogInfo("Rebalancing ring failed")
-		return "", err
+	if bc.doNotRebalance {
+		bc.LogInfo("NOT Rebalancing ring")
 	} else {
-		output = append(output, out.String())
-		bc.LogInfo("Rebalancing ring")
+		cmd := exec.Command("swift-ring-builder", bc.ringBuilder, "rebalance")
+		var out bytes.Buffer
+		cmd.Stdout = &out
+		if err := cmd.Run(); err != nil {
+			bc.LogInfo("Rebalancing ring failed")
+			return "", err
+		} else {
+			output = append(output, out.String())
+			bc.LogInfo("Rebalancing ring")
+		}
 	}
 	db, err := bc.getDb()
 	if err != nil {
@@ -641,6 +646,7 @@ func GetBirdCatcher(serverconf hummingbird.Config, flags *flag.FlagSet) (humming
 	ringBuilder := serverconf.GetDefault("andrewd", "ring_builder", "/etc/swift/object.builder")
 	ringUpdateFreq := serverconf.GetInt("andrewd", "ring_update_frequency", 259200)
 	runFreq := serverconf.GetInt("andrewd", "run_frequency", 3600)
+	doNotRebalance := serverconf.GetBool("andrewd", "do_not_rebalance", false)
 
 	logger, err := hummingbird.SetupLogger(serverconf, flags, "andrewd", "birdcatcher")
 	if err != nil {
@@ -656,6 +662,7 @@ func GetBirdCatcher(serverconf hummingbird.Config, flags *flag.FlagSet) (humming
 		ringBuilder:     ringBuilder,
 		ringUpdateFreq:  time.Duration(ringUpdateFreq) * time.Second,
 		runFreq:         time.Duration(runFreq) * time.Second,
+		doNotRebalance:  doNotRebalance,
 		logger:          logger,
 	}
 	return &bc, nil
