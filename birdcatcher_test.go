@@ -32,8 +32,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/openstack/swift/go/hummingbird"
 	"github.com/stretchr/testify/require"
+	"github.com/troubling/hummingbird"
 )
 
 func getBc(settings ...string) (*BirdCatcher, error) {

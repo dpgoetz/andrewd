@@ -24,7 +24,8 @@ import (
 	"syscall"
 
 	"github.com/dpgoetz/andrewd"
-	"github.com/openstack/swift/go/hummingbird"
+	"github.com/troubling/hummingbird/common/conf"
+	"github.com/troubling/hummingbird/common/srv"
 )
 
 var Version = "0.1"
@@ -82,8 +83,8 @@ func StartDaemon() {
 	if err == nil {
 		return
 	}
-	conf := getConfig()
-	if conf == "" {
+	confPath := getConfig()
+	if confPath == "" {
 		fmt.Println("Unable to find config file.")
 		return
 	}
@@ -92,8 +93,8 @@ func StartDaemon() {
 		fmt.Println("Unable to find executable in path.")
 		return
 	}
-	uid, gid, err := hummingbird.UidFromConf(conf)
-	cmd := exec.Command(dExec, "run", "-d", "-c", conf)
+	uid, gid, err := conf.UidFromConf(confPath)
+	cmd := exec.Command(dExec, "run", "-d", "-c", confPath)
 
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if uint32(os.Getuid()) != uid {
@@ -154,6 +155,7 @@ func main() {
 	runFlags.Bool("d", false, "Close stdio once server is running")
 	runFlags.Bool("once", false, "Run one pass of andrewd")
 	runFlags.String("c", getConfig(), "Config file to use")
+	runFlags.Bool("v", false, "Send all log messages to the console (if -d is not specified)")
 	runFlags.Usage = func() {
 		fmt.Fprintf(os.Stderr, "andrewd run [ARGS]\n")
 		runFlags.PrintDefaults()
@@ -186,7 +188,12 @@ func main() {
 		ProcessControlCommand(RestartDaemon)
 	case "run":
 		runFlags.Parse(flag.Args()[1:])
-		hummingbird.RunDaemon(andrewd.GetBirdCatcher, runFlags)
+		srv.RunDaemon(andrewd.GetBirdCatcher, runFlags)
+		/*
+			case "populate-dispersion":
+				runFlags.Parse(flag.Args()[1:])
+				dm := dispersion.GetDispersionMonitor, runFlags)
+		*/
 	default:
 		flag.Usage()
 	}
