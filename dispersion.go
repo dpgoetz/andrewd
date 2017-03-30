@@ -53,7 +53,7 @@ func (dm *DispersionMonitor) getDispersionObjects(objNames chan string) {
 	}
 }
 
-func (dm *DispersionMonitor) putDispersionObjects(objNames []string) bool {
+func (dm *DispersionMonitor) putDispersionObjects() bool {
 	client := http.Client{ // TODO: make this a class lvl client
 		Transport: &http.Transport{
 			Dial: (&net.Dialer{
@@ -65,16 +65,16 @@ func (dm *DispersionMonitor) putDispersionObjects(objNames []string) bool {
 	}
 	successes := uint64(0)
 	numReplicas := dm.oring.ReplicaCount()
-	for _, obj := range objNames {
+	objNames := make(chan string)
+	go dm.getDispersionObjects(objNames)
+	for obj := range objNames {
 		partition := dm.oring.GetPartition(Account, Container, obj)
-		fmt.Println("000")
 
 		for _, device := range dm.oring.GetNodes(partition) {
 			for retry := uint64(0); retry < 3; retry++ {
 				url := fmt.Sprintf("http://%s:%d/%s/%d/%s/%s/%s",
 					device.Ip, device.Port, device.Device,
 					partition, Account, Container, obj)
-				fmt.Println(fmt.Sprintf("aaa: %s", url))
 				req, _ := http.NewRequest("PUT", url, nil)
 				req.Header.Set("Content-Length", "0")
 				req.Header.Set("Content-Type", "text")
@@ -82,17 +82,14 @@ func (dm *DispersionMonitor) putDispersionObjects(objNames []string) bool {
 
 				resp, err := client.Do(req)
 				if err != nil {
-					fmt.Println("111")
 					fmt.Println(fmt.Sprintf("Error on PUT to %s: %v\n", url, err))
 					continue
 				}
 				resp.Body.Close()
 				if resp.StatusCode/100 != 2 {
-					fmt.Println("222")
 					time.Sleep(2 << retry * time.Second)
 					fmt.Println(fmt.Sprintf("PUT to %s got %d", url, resp.StatusCode))
 				} else {
-					fmt.Println("333")
 					successes += 1
 					break
 				}

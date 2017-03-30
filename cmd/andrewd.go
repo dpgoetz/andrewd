@@ -163,11 +163,12 @@ func main() {
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: andrewd [command] [args...]\n")
 		flag.PrintDefaults()
-		fmt.Fprintf(os.Stderr, "            start: start daemon\n")
-		fmt.Fprintf(os.Stderr, "             stop: stop daemon\n")
-		fmt.Fprintf(os.Stderr, "          restart: stop then restart daemon\n")
-		fmt.Fprintf(os.Stderr, "           version: prints the version\n")
-		fmt.Fprintf(os.Stderr, "              run: run andrewd (attached)\n")
+		fmt.Fprintf(os.Stderr, "               start: start daemon\n")
+		fmt.Fprintf(os.Stderr, "                stop: stop daemon\n")
+		fmt.Fprintf(os.Stderr, "             restart: stop then restart daemon\n")
+		fmt.Fprintf(os.Stderr, "             version: prints the version\n")
+		fmt.Fprintf(os.Stderr, "                 run: run andrewd (attached)\n")
+		fmt.Fprintf(os.Stderr, " populate-dispersion: populate 100%% dispersion objects in .dispersion/dObjects/ (takes a while)\n")
 		fmt.Fprintf(os.Stderr, "\n")
 		runFlags.Usage()
 		fmt.Fprintf(os.Stderr, "\n")
@@ -189,11 +190,17 @@ func main() {
 	case "run":
 		runFlags.Parse(flag.Args()[1:])
 		srv.RunDaemon(andrewd.GetBirdCatcher, runFlags)
-		/*
-			case "populate-dispersion":
-				runFlags.Parse(flag.Args()[1:])
-				dm := dispersion.GetDispersionMonitor, runFlags)
-		*/
+	case "populate-dispersion":
+		runFlags.Parse(flag.Args()[1:])
+		configFile := runFlags.Lookup("c").Value.(flag.Getter).Get().(string)
+		configs, err := conf.LoadConfigs(configFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error finding configs: %v\n", err)
+			return
+		}
+		//dm := andrewd.GetDispersionMonitor(conf
+
+		srv.RunDaemon(andrewd.GetDispersionMonitor, runFlags)
 	default:
 		flag.Usage()
 	}

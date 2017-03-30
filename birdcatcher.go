@@ -451,6 +451,14 @@ func (bc *BirdCatcher) updateRing() (outputStr string, err error) {
 			output = append(output, out.String())
 			bc.LogInfo("Setting weight of %s to zero", devKey)
 		}
+		cmd = exec.Command(
+			"swift-ring-builder", bc.ringBuilder,
+			"set_info", "--ip", dev.Ip, "--port", fmt.Sprintf("%d", dev.Port), "--device", dev.Device,
+			"--change-meta", fmt.Sprintf("andrewd zeroed weight on: %s", time.Now().UTC().Format(time.UnixDate)))
+		cmd.Stdout = &out
+		if err := cmd.Run(); err != nil {
+			bc.LogError(fmt.Sprintf("error setting metadata: %s", err))
+		}
 	}
 
 	if bc.doNotRebalance {
