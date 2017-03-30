@@ -395,8 +395,12 @@ func (bc *BirdCatcher) updateDb() error {
 func (bc *BirdCatcher) getDevicesToUnmount() (badDevices []ring.Device, err error) {
 	allRingDevices, _ := bc.getRingData()
 	totalWeight := float64(0)
+	zeroedDevices := make(map[string]bool)
 	for _, dev := range allRingDevices {
 		totalWeight += dev.Weight
+		if dev.Weight == 0 {
+			zeroedDevices[bc.deviceId(dev.Ip, dev.Port, dev.Device)] = true
+		}
 	}
 	db, err := bc.getDb()
 	if err != nil {
@@ -417,10 +421,12 @@ func (bc *BirdCatcher) getDevicesToUnmount() (badDevices []ring.Device, err erro
 		if err := rows.Scan(&ip, &port, &device, &weight, &mounted, &reachable); err != nil {
 			return nil, err
 		} else {
-			weightToUnmount += weight
-			if weightToUnmount < totalWeight*bc.maxWeightChange {
-				badDevices = append(badDevices, ring.Device{
-					Ip: ip, Port: port, Device: device, Weight: weight})
+			if _, alreadyZero := zeroedDevices[bc.deviceId(ip, port, device)]; !alreadyZero {
+				weightToUnmount += weight
+				if weightToUnmount < totalWeight*bc.maxWeightChange {
+					badDevices = append(badDevices, ring.Device{
+						Ip: ip, Port: port, Device: device, Weight: weight})
+				}
 			}
 		}
 	}
