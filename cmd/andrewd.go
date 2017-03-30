@@ -25,6 +25,7 @@ import (
 
 	"github.com/dpgoetz/andrewd"
 	"github.com/troubling/hummingbird/common/conf"
+	"github.com/troubling/hummingbird/common/ring"
 	"github.com/troubling/hummingbird/common/srv"
 )
 
@@ -192,15 +193,19 @@ func main() {
 		srv.RunDaemon(andrewd.GetBirdCatcher, runFlags)
 	case "populate-dispersion":
 		runFlags.Parse(flag.Args()[1:])
-		configFile := runFlags.Lookup("c").Value.(flag.Getter).Get().(string)
-		configs, err := conf.LoadConfigs(configFile)
+		hashPathPrefix, hashPathSuffix, err := conf.GetHashPrefixAndSuffix()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error finding configs: %v\n", err)
+			fmt.Println("Unable to load hash path prefix and suffix:", err)
 			return
 		}
-		//dm := andrewd.GetDispersionMonitor(conf
+		objRing, err := ring.GetRing("object", hashPathPrefix, hashPathSuffix, 0)
+		if err != nil {
+			fmt.Println("Unable to load ring:", err)
+			return
+		}
+		fmt.Println("Starting to put objects")
+		andrewd.PutDispersionObjects(objRing)
 
-		srv.RunDaemon(andrewd.GetDispersionMonitor, runFlags)
 	default:
 		flag.Usage()
 	}

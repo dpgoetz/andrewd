@@ -35,16 +35,16 @@ type DispersionMonitor struct {
 	logger srv.LowLevelLogger
 }
 
-func (dm *DispersionMonitor) getDispersionObjects(objNames chan string) {
+func getDispersionObjects(oring ring.Ring, objNames chan string) {
 	defer close(objNames)
 	for partition := uint64(0); true; partition++ {
-		devs := dm.oring.GetNodesInOrder(partition)
+		devs := oring.GetNodesInOrder(partition)
 		if devs == nil {
 			break
 		}
 		for i := uint64(0); true; i++ {
 			obj := fmt.Sprintf("%d-%d", partition, i)
-			genPart := dm.oring.GetPartition(Account, Container, obj)
+			genPart := oring.GetPartition(Account, Container, obj)
 			if genPart == partition {
 				objNames <- obj
 				break
@@ -53,8 +53,8 @@ func (dm *DispersionMonitor) getDispersionObjects(objNames chan string) {
 	}
 }
 
-func (dm *DispersionMonitor) putDispersionObjects() bool {
-	client := http.Client{ // TODO: make this a class lvl client
+func PutDispersionObjects(oring ring.Ring) bool {
+	client := http.Client{
 		Transport: &http.Transport{
 			Dial: (&net.Dialer{
 				Timeout:   10 * time.Second,
@@ -63,18 +63,22 @@ func (dm *DispersionMonitor) putDispersionObjects() bool {
 		},
 		Timeout: 20 * time.Second,
 	}
+	numObjs := uint64(0)
 	successes := uint64(0)
-	numReplicas := dm.oring.ReplicaCount()
+	numReplicas := oring.ReplicaCount()
 	objNames := make(chan string)
-	go dm.getDispersionObjects(objNames)
+	go getDispersionObjects(oring, objNames)
 	for obj := range objNames {
-		partition := dm.oring.GetPartition(Account, Container, obj)
+		partition := oring.GetPartition(Account, Container, obj)
+		numObjs += 1
 
-		for _, device := range dm.oring.GetNodes(partition) {
+		fmt.Println("going to put: ", obj)
+		for _, device := range oring.GetNodes(partition) {
 			for retry := uint64(0); retry < 3; retry++ {
 				url := fmt.Sprintf("http://%s:%d/%s/%d/%s/%s/%s",
 					device.Ip, device.Port, device.Device,
 					partition, Account, Container, obj)
+				fmt.Println("going to put: ", url)
 				req, _ := http.NewRequest("PUT", url, nil)
 				req.Header.Set("Content-Length", "0")
 				req.Header.Set("Content-Type", "text")
@@ -90,14 +94,15 @@ func (dm *DispersionMonitor) putDispersionObjects() bool {
 					time.Sleep(2 << retry * time.Second)
 					fmt.Println(fmt.Sprintf("PUT to %s got %d", url, resp.StatusCode))
 				} else {
+					fmt.Println("resp: ", resp.StatusCode)
 					successes += 1
 					break
 				}
 			}
 		}
 	}
-	totalObjects := uint64(len(objNames)) * numReplicas
-	fmt.Println(fmt.Sprintf("successes: %d, totelObj: %d, numRep: %d, %d", successes, totalObjects, numReplicas, len(objNames)))
+	totalObjects := numObjs * numReplicas
+	fmt.Println(fmt.Sprintf("successes: %d, totalObj: %d, numRep: %d, %d", successes, totalObjects, numReplicas, numObjs))
 	success := successes == totalObjects
 	if success {
 		fmt.Println("All Dispersion Objects PUT successfully!!")
