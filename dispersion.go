@@ -1,4 +1,4 @@
-//  Copyright (c) 2016 Rackspace
+//  Copyright (c) 2017 Rackspace
 //
 //  Licensed under the Apache License, Version 2.0 (the "License");
 //  you may not use this file except in compliance with the License.
@@ -16,19 +16,20 @@
 package andrewd
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
-	"net"
-	"net/http"
 	"time"
 
+	"github.com/troubling/hummingbird/client"
+	"github.com/troubling/hummingbird/common"
 	"github.com/troubling/hummingbird/common/conf"
 	"github.com/troubling/hummingbird/common/ring"
 	"github.com/troubling/hummingbird/common/srv"
 )
 
 var Account = ".dispersion"
-var Container = "dObjects"
+var Container = "objs"
 
 type DispersionMonitor struct {
 	oring  ring.Ring
@@ -53,62 +54,47 @@ func getDispersionObjects(oring ring.Ring, objNames chan string) {
 	}
 }
 
-func PutDispersionObjects(oring ring.Ring) bool {
-	client := http.Client{
-		Transport: &http.Transport{
-			Dial: (&net.Dialer{
-				Timeout:   10 * time.Second,
-				KeepAlive: 5 * time.Second,
-			}).Dial,
-		},
-		Timeout: 20 * time.Second,
+func PutDispersionObjects(hClient client.ProxyClient) bool {
+	status := hClient.PutAccount(Account, common.Map2Headers(map[string]string{
+		"Content-Length": "0",
+		"Content-Type":   "text",
+		"X-Timestamp":    fmt.Sprintf("%d", time.Now().Unix())}))
+	if status/100 != 2 {
+		fmt.Println(fmt.Sprintf("Could not put account: %v", status))
+	}
+	status = hClient.PutContainer(Account, Container, common.Map2Headers(map[string]string{
+		"Content-Length": "0",
+		"Content-Type":   "text",
+		"X-Timestamp":    fmt.Sprintf("%d", time.Now().Unix())}))
+	if status/100 != 2 {
+		fmt.Println(fmt.Sprintf("Could not put container: %v", status))
 	}
 	numObjs := uint64(0)
 	successes := uint64(0)
-	numReplicas := oring.ReplicaCount()
 	objNames := make(chan string)
-	go getDispersionObjects(oring, objNames)
+	_, _, objRing := hClient.GetRings()
+	go getDispersionObjects(objRing, objNames)
 	for obj := range objNames {
-		partition := oring.GetPartition(Account, Container, obj)
 		numObjs += 1
-
-		fmt.Println("going to put: ", obj)
-		for _, device := range oring.GetNodes(partition) {
-			for retry := uint64(0); retry < 3; retry++ {
-				url := fmt.Sprintf("http://%s:%d/%s/%d/%s/%s/%s",
-					device.Ip, device.Port, device.Device,
-					partition, Account, Container, obj)
-				fmt.Println("going to put: ", url)
-				req, _ := http.NewRequest("PUT", url, nil)
-				req.Header.Set("Content-Length", "0")
-				req.Header.Set("Content-Type", "text")
-				req.Header.Set("X-Timestamp", fmt.Sprintf("%d", time.Now().Unix()))
-
-				resp, err := client.Do(req)
-				if err != nil {
-					fmt.Println(fmt.Sprintf("Error on PUT to %s: %v\n", url, err))
-					continue
-				}
-				resp.Body.Close()
-				if resp.StatusCode/100 != 2 {
-					time.Sleep(2 << retry * time.Second)
-					fmt.Println(fmt.Sprintf("PUT to %s got %d", url, resp.StatusCode))
-				} else {
-					fmt.Println("resp: ", resp.StatusCode)
-					successes += 1
-					break
-				}
-			}
+		if numObjs%1000 == 0 {
+			fmt.Println(fmt.Sprintf("So far put %d objects", numObjs))
+		}
+		if status = hClient.PutObject(Account, Container, obj, common.Map2Headers(map[string]string{
+			"Content-Length": "0",
+			"Content-Type":   "text",
+			"X-Timestamp":    fmt.Sprintf("%d", time.Now().Unix())}),
+			bytes.NewReader([]byte(""))); status/100 == 2 {
+			successes += 1
+		} else {
+			fmt.Println(fmt.Sprintf("PUT to %s/%s got %v", Container, obj, status))
 		}
 	}
-	totalObjects := numObjs * numReplicas
-	fmt.Println(fmt.Sprintf("successes: %d, totalObj: %d, numRep: %d, %d", successes, totalObjects, numReplicas, numObjs))
-	success := successes == totalObjects
+	success := successes == numObjs
 	if success {
-		fmt.Println("All Dispersion Objects PUT successfully!!")
+		fmt.Println(fmt.Sprintf("All %d Dispersion Objects PUT successfully!!", numObjs))
 	} else {
 		fmt.Println(fmt.Sprintf("Missing %d Dispersion Objects.",
-			totalObjects-successes))
+			numObjs-successes))
 	}
 	return success
 }

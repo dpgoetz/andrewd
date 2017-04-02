@@ -119,10 +119,6 @@ type FakeRing struct {
 	Port int
 }
 
-func (r *FakeRing) AllDevices() (devs []ring.Device) {
-	return r.Devs
-}
-
 func (r *FakeRing) GetNodes(partition uint64) (response []*ring.Device) {
 	for i, _ := range r.Devs {
 		response = append(response, &r.Devs[i])
@@ -132,7 +128,13 @@ func (r *FakeRing) GetNodes(partition uint64) (response []*ring.Device) {
 }
 
 func (r *FakeRing) GetNodesInOrder(partition uint64) (response []*ring.Device) {
-	return nil
+	if partition > 3 {
+		return nil
+	}
+	for i, _ := range r.Devs {
+		response = append(response, &r.Devs[i])
+	}
+	return response
 }
 
 func (r *FakeRing) GetJobNodes(partition uint64, localDevice int) (response []*ring.Device, handoff bool) {
@@ -140,14 +142,19 @@ func (r *FakeRing) GetJobNodes(partition uint64, localDevice int) (response []*r
 }
 
 func (r *FakeRing) GetPartition(account string, container string, object string) uint64 {
-	if i, err := strconv.ParseUint(object, 10, 64); err == nil {
-		return i
+	objParts := strings.Split(object, "-")
+	if p, err := strconv.ParseUint(objParts[0], 10, 64); err == nil {
+		return p
 	}
 	return 0
 }
 
 func (r *FakeRing) LocalDevices(localPort int) (devs []*ring.Device, err error) {
 	return nil, nil
+}
+
+func (r *FakeRing) AllDevices() (devs []ring.Device) {
+	return r.Devs
 }
 
 func (r *FakeRing) GetMoreNodes(partition uint64) ring.MoreNodes {

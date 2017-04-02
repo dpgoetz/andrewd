@@ -24,8 +24,8 @@ import (
 	"syscall"
 
 	"github.com/dpgoetz/andrewd"
+	"github.com/troubling/hummingbird/client"
 	"github.com/troubling/hummingbird/common/conf"
-	"github.com/troubling/hummingbird/common/ring"
 	"github.com/troubling/hummingbird/common/srv"
 )
 
@@ -193,18 +193,13 @@ func main() {
 		srv.RunDaemon(andrewd.GetBirdCatcher, runFlags)
 	case "populate-dispersion":
 		runFlags.Parse(flag.Args()[1:])
-		hashPathPrefix, hashPathSuffix, err := conf.GetHashPrefixAndSuffix()
-		if err != nil {
-			fmt.Println("Unable to load hash path prefix and suffix:", err)
-			return
-		}
-		objRing, err := ring.GetRing("object", hashPathPrefix, hashPathSuffix, 0)
-		if err != nil {
-			fmt.Println("Unable to load ring:", err)
-			return
-		}
 		fmt.Println("Starting to put objects")
-		andrewd.PutDispersionObjects(objRing)
+
+		hClient, err := client.NewProxyDirectClient()
+		if err != nil {
+			fmt.Println(fmt.Sprintf("Could not make client: %v", err))
+		}
+		andrewd.PutDispersionObjects(hClient)
 
 	default:
 		flag.Usage()
