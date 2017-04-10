@@ -32,8 +32,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/openstack/swift/go/hummingbird"
 	"github.com/stretchr/testify/require"
+	"github.com/troubling/hummingbird/common/conf"
+	"github.com/troubling/hummingbird/common/ring"
 )
 
 func getBc(settings ...string) (*BirdCatcher, error) {
@@ -46,12 +47,12 @@ func getBc(settings ...string) (*BirdCatcher, error) {
 	for i := 0; i < len(settings); i += 2 {
 		configString += fmt.Sprintf("%s=%s\n", settings[i], settings[i+1])
 	}
-	conf, err := hummingbird.StringConfig(configString)
+	confStr, err := conf.StringConfig(configString)
 	if err != nil {
 		return nil, err
 	}
 
-	bc, _ := GetBirdCatcher(conf, &flag.FlagSet{})
+	bc, _ := GetBirdCatcher(confStr, &flag.FlagSet{})
 	return bc.(*BirdCatcher), nil
 
 }
@@ -113,35 +114,59 @@ func TestGetReconUmounted(t *testing.T) {
 }
 
 type FakeRing struct {
-	Devs []hummingbird.Device
+	Devs []ring.Device
+	Ip   string
+	Port int
 }
 
-func (r *FakeRing) AllDevices() (devs []hummingbird.Device) {
-	return r.Devs
+func (r *FakeRing) GetNodes(partition uint64) (response []*ring.Device) {
+	for i, _ := range r.Devs {
+		response = append(response, &r.Devs[i])
+	}
+	//append(response, &ring.Device{Id: 1, Device: "sdb1", Ip: r.Ip, Port: r.Port, Weight: 1})
+	return response
 }
 
-func (r *FakeRing) GetNodes(partition uint64) (response []*hummingbird.Device) {
-	return nil
+func (r *FakeRing) GetNodesInOrder(partition uint64) (response []*ring.Device) {
+	if partition > 3 {
+		return nil
+	}
+	for i, _ := range r.Devs {
+		response = append(response, &r.Devs[i])
+	}
+	return response
 }
 
-func (r *FakeRing) GetNodesInOrder(partition uint64) (response []*hummingbird.Device) {
-	return nil
-}
-
-func (r *FakeRing) GetJobNodes(partition uint64, localDevice int) (response []*hummingbird.Device, handoff bool) {
+func (r *FakeRing) GetJobNodes(partition uint64, localDevice int) (response []*ring.Device, handoff bool) {
 	return nil, false
 }
 
 func (r *FakeRing) GetPartition(account string, container string, object string) uint64 {
+	objParts := strings.Split(object, "-")
+	if p, err := strconv.ParseUint(objParts[0], 10, 64); err == nil {
+		return p
+	}
 	return 0
 }
 
-func (r *FakeRing) LocalDevices(localPort int) (devs []*hummingbird.Device, err error) {
+func (r *FakeRing) LocalDevices(localPort int) (devs []*ring.Device, err error) {
 	return nil, nil
 }
 
-func (r *FakeRing) GetMoreNodes(partition uint64) hummingbird.MoreNodes {
+func (r *FakeRing) AllDevices() (devs []ring.Device) {
+	return r.Devs
+}
+
+func (r *FakeRing) GetMoreNodes(partition uint64) ring.MoreNodes {
 	return nil
+}
+
+func (r *FakeRing) PartitionCount() uint64 {
+	return 1
+}
+
+func (r *FakeRing) ReplicaCount() uint64 {
+	return 2
 }
 
 func TestGatherReconData(t *testing.T) {
@@ -156,7 +181,7 @@ func TestGatherReconData(t *testing.T) {
 	fr := FakeRing{}
 
 	fr.Devs = append(fr.Devs,
-		hummingbird.Device{Id: 1, Device: "sdb1", Ip: host, Port: port, Weight: 1})
+		ring.Device{Id: 1, Device: "sdb1", Ip: host, Port: port, Weight: 1})
 
 	bc, _ := getBc()
 	defer closeBc(bc)
@@ -174,13 +199,13 @@ func TestGetRingData(t *testing.T) {
 	fr := FakeRing{}
 
 	fr.Devs = append(fr.Devs,
-		hummingbird.Device{Id: 1, Device: "sdb1", Ip: "1.2", Port: 1, Weight: 1})
+		ring.Device{Id: 1, Device: "sdb1", Ip: "1.2", Port: 1, Weight: 1})
 	fr.Devs = append(fr.Devs,
-		hummingbird.Device{Id: 2, Device: "sdb2", Ip: "1.2", Port: 1, Weight: 1})
+		ring.Device{Id: 2, Device: "sdb2", Ip: "1.2", Port: 1, Weight: 1})
 	fr.Devs = append(fr.Devs,
-		hummingbird.Device{Id: 2, Device: "sdb1", Ip: "1.2", Port: 2, Weight: 1})
+		ring.Device{Id: 2, Device: "sdb1", Ip: "1.2", Port: 2, Weight: 1})
 	fr.Devs = append(fr.Devs,
-		hummingbird.Device{Id: 2, Device: "sdb1", Ip: "1.2", Port: 3, Weight: 0})
+		ring.Device{Id: 2, Device: "sdb1", Ip: "1.2", Port: 3, Weight: 0})
 
 	bc, _ := getBc()
 	defer closeBc(bc)
@@ -209,11 +234,11 @@ func TestPopulateDbWithRing(t *testing.T) {
 	port, _ := strconv.Atoi(ports)
 
 	fr.Devs = append(fr.Devs,
-		hummingbird.Device{Id: 1, Device: "sdb1", Ip: "1.2", Port: 1, Weight: 1.1})
+		ring.Device{Id: 1, Device: "sdb1", Ip: "1.2", Port: 1, Weight: 1.1})
 	fr.Devs = append(fr.Devs,
-		hummingbird.Device{Id: 2, Device: "sdb2", Ip: "1.2", Port: 1, Weight: 3.5})
+		ring.Device{Id: 2, Device: "sdb2", Ip: "1.2", Port: 1, Weight: 3.5})
 	fr.Devs = append(fr.Devs,
-		hummingbird.Device{Id: 2, Device: "sdb3", Ip: host, Port: port, Weight: 5.5})
+		ring.Device{Id: 2, Device: "sdb3", Ip: host, Port: port, Weight: 5.5})
 
 	bc, _ := getBc()
 	defer closeBc(bc)
@@ -263,7 +288,7 @@ func TestUpdateDb(t *testing.T) {
 	port, _ := strconv.Atoi(ports)
 
 	fr.Devs = append(fr.Devs,
-		hummingbird.Device{Id: 1, Device: "sdb1", Ip: host, Port: port, Weight: 1.1})
+		ring.Device{Id: 1, Device: "sdb1", Ip: host, Port: port, Weight: 1.1})
 
 	bc, _ := getBc()
 	defer closeBc(bc)
@@ -437,7 +462,7 @@ func TestNeedRingUpdate(t *testing.T) {
 	tx, err := db.Begin()
 	require.Equal(t, err, nil)
 
-	require.False(t, bc.needRingUpdate())
+	require.True(t, bc.needRingUpdate()) // will update ring on init run
 
 	now := time.Now()
 	_, err = tx.Exec("INSERT INTO ring_action "+

@@ -30,14 +30,17 @@ import (
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
-	"github.com/openstack/swift/go/hummingbird"
+	"github.com/troubling/hummingbird/common"
+	"github.com/troubling/hummingbird/common/conf"
+	"github.com/troubling/hummingbird/common/ring"
+	"github.com/troubling/hummingbird/common/srv"
 )
 
 const ONE_DAY = 86400
 
 type BirdCatcher struct {
-	oring           hummingbird.Ring
-	logger          hummingbird.LowLevelLogger
+	oring           ring.Ring
+	logger          srv.LowLevelLogger
 	workingDir      string
 	reportDir       string
 	maxAge          time.Duration
@@ -55,7 +58,7 @@ type ReconData struct {
 	Mounted bool
 	ip      string
 	port    int
-	dev     hummingbird.Device
+	dev     ring.Device
 }
 
 type ReportDevice struct {
@@ -270,8 +273,8 @@ func (bc *BirdCatcher) getDb() (*sql.DB, error) {
 	return bc.db, nil
 }
 
-func (bc *BirdCatcher) getRingData() (map[string]hummingbird.Device, []ipPort) {
-	allRingDevices := make(map[string]hummingbird.Device)
+func (bc *BirdCatcher) getRingData() (map[string]ring.Device, []ipPort) {
+	allRingDevices := make(map[string]ring.Device)
 	var allWeightedServers []ipPort
 	weightedServers := make(map[string]bool)
 	for _, dev := range bc.oring.AllDevices() {
@@ -297,6 +300,7 @@ func (bc *BirdCatcher) needRingUpdate() bool {
 		bc.logger.Err(fmt.Sprintf("ERROR: getDb for needRingUpdate: %v", err))
 		return false
 	}
+	// need to check for no rows
 	rows, err := db.Query("SELECT create_date FROM ring_action ORDER BY create_date DESC LIMIT 1")
 	defer rows.Close()
 	if err != nil {
@@ -308,6 +312,9 @@ func (bc *BirdCatcher) needRingUpdate() bool {
 		if err := rows.Scan(&createDate); err == nil {
 			return time.Since(createDate) > bc.ringUpdateFreq
 		}
+	} else {
+		bc.logger.Info(fmt.Sprintf("DFG init ring update"))
+		return true
 	}
 	return false
 }
@@ -385,11 +392,15 @@ func (bc *BirdCatcher) updateDb() error {
 	return nil
 }
 
-func (bc *BirdCatcher) getDevicesToUnmount() (badDevices []hummingbird.Device, err error) {
+func (bc *BirdCatcher) getDevicesToUnmount() (badDevices []ring.Device, err error) {
 	allRingDevices, _ := bc.getRingData()
 	totalWeight := float64(0)
+	zeroedDevices := make(map[string]bool)
 	for _, dev := range allRingDevices {
 		totalWeight += dev.Weight
+		if dev.Weight == 0 {
+			zeroedDevices[bc.deviceId(dev.Ip, dev.Port, dev.Device)] = true
+		}
 	}
 	db, err := bc.getDb()
 	if err != nil {
@@ -410,10 +421,12 @@ func (bc *BirdCatcher) getDevicesToUnmount() (badDevices []hummingbird.Device, e
 		if err := rows.Scan(&ip, &port, &device, &weight, &mounted, &reachable); err != nil {
 			return nil, err
 		} else {
-			weightToUnmount += weight
-			if weightToUnmount < totalWeight*bc.maxWeightChange {
-				badDevices = append(badDevices, hummingbird.Device{
-					Ip: ip, Port: port, Device: device, Weight: weight})
+			if _, alreadyZero := zeroedDevices[bc.deviceId(ip, port, device)]; !alreadyZero {
+				weightToUnmount += weight
+				if weightToUnmount < totalWeight*bc.maxWeightChange {
+					badDevices = append(badDevices, ring.Device{
+						Ip: ip, Port: port, Device: device, Weight: weight})
+				}
 			}
 		}
 	}
@@ -437,6 +450,14 @@ func (bc *BirdCatcher) updateRing() (outputStr string, err error) {
 		} else {
 			output = append(output, out.String())
 			bc.LogInfo("Setting weight of %s to zero", devKey)
+		}
+		cmd = exec.Command(
+			"swift-ring-builder", bc.ringBuilder,
+			"set_info", "--ip", dev.Ip, "--port", fmt.Sprintf("%d", dev.Port), "--device", dev.Device,
+			"--change-meta", fmt.Sprintf("andrewd zeroed weight on: %s", time.Now().UTC().Format(time.UnixDate)))
+		cmd.Stdout = &out
+		if err := cmd.Run(); err != nil {
+			bc.LogError(fmt.Sprintf("error setting metadata: %s", err))
 		}
 	}
 
@@ -475,7 +496,7 @@ func (bc *BirdCatcher) updateRing() (outputStr string, err error) {
 	if err = tx.Commit(); err != nil {
 		return "", err
 	}
-	bc.LogInfo("Removed %s devices from ring", len(badDevices))
+	bc.LogInfo("Removed %d devices from ring", len(badDevices))
 	return strings.Join(output, "\n"), nil
 }
 
@@ -622,13 +643,13 @@ func (bc *BirdCatcher) RunForever() {
 	}
 }
 
-func GetBirdCatcher(serverconf hummingbird.Config, flags *flag.FlagSet) (hummingbird.Daemon, error) {
-	hashPathPrefix, hashPathSuffix, err := hummingbird.GetHashPrefixAndSuffix()
+func GetBirdCatcher(serverconf conf.Config, flags *flag.FlagSet) (srv.Daemon, error) {
+	hashPathPrefix, hashPathSuffix, err := conf.GetHashPrefixAndSuffix()
 	if err != nil {
 		fmt.Println("Unable to load hash path prefix and suffix:", err)
 		return nil, err
 	}
-	objRing, err := hummingbird.GetRing("object", hashPathPrefix, hashPathSuffix, 0)
+	objRing, err := ring.GetRing("object", hashPathPrefix, hashPathSuffix, 0)
 	if err != nil {
 		fmt.Println("Unable to load ring:", err)
 		return nil, err
@@ -641,14 +662,14 @@ func GetBirdCatcher(serverconf hummingbird.Config, flags *flag.FlagSet) (humming
 	if !ok {
 		panic("Invalid Config, no report_dir")
 	}
-	maxAge := time.Duration(serverconf.GetInt("andrewd", "max_age_sec", int64(hummingbird.ONE_WEEK*time.Second)))
+	maxAge := time.Duration(serverconf.GetInt("andrewd", "max_age_sec", int64(common.ONE_WEEK*time.Second)))
 	maxWeightChange := serverconf.GetFloat("andrewd", "max_weight_change", 0.005)
 	ringBuilder := serverconf.GetDefault("andrewd", "ring_builder", "/etc/swift/object.builder")
 	ringUpdateFreq := serverconf.GetInt("andrewd", "ring_update_frequency", 259200)
 	runFreq := serverconf.GetInt("andrewd", "run_frequency", 3600)
 	doNotRebalance := serverconf.GetBool("andrewd", "do_not_rebalance", false)
 
-	logger, err := hummingbird.SetupLogger(serverconf, flags, "andrewd", "birdcatcher")
+	logger, err := srv.SetupLogger(serverconf, flags, "andrewd", "birdcatcher")
 	if err != nil {
 		panic(fmt.Sprintf("Error setting up logger: %v", err))
 	}
