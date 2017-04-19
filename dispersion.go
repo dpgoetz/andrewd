@@ -74,10 +74,16 @@ func PutDispersionObjects(hClient client.ProxyClient) bool {
 	objNames := make(chan string)
 	_, _, objRing := hClient.GetRings()
 	go getDispersionObjects(objRing, objNames)
+
+	start := time.Now()
+
 	for obj := range objNames {
 		numObjs += 1
 		if numObjs%1000 == 0 {
-			fmt.Println(fmt.Sprintf("So far put %d objects", numObjs))
+			timeSpent := time.Since(start).Seconds()
+			partsSec := float64(numObjs) / timeSpent
+			hoursRem := float64(objRing.PartitionCount()-numObjs) / partsSec / 60 / 60
+			fmt.Println(fmt.Sprintf("So far put %d objects (%.2f/s) %.1fh remaining.", numObjs, partsSec, hoursRem))
 		}
 		if status = hClient.PutObject(Account, Container, obj, common.Map2Headers(map[string]string{
 			"Content-Length": "0",

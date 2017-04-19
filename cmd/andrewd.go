@@ -169,7 +169,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "             restart: stop then restart daemon\n")
 		fmt.Fprintf(os.Stderr, "             version: prints the version\n")
 		fmt.Fprintf(os.Stderr, "                 run: run andrewd (attached)\n")
-		fmt.Fprintf(os.Stderr, " populate-dispersion: populate 100%% dispersion objects in .dispersion/dObjects/ (takes a while)\n")
+		fmt.Fprintf(os.Stderr, " populate-dispersion: populate 100%% dispersion objects in .dispersion/objs/ (takes a while)\n")
 		fmt.Fprintf(os.Stderr, "\n")
 		runFlags.Usage()
 		fmt.Fprintf(os.Stderr, "\n")
