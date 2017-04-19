@@ -1,0 +1,21 @@
+#!/usr/bin/make -f
+
+BUILDPATH := $(shell mktemp -d)
+export GOPATH=${BUILDPATH}
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	mkdir -p ${BUILDPATH}/src/github.com/dpgoetz
+	ln -s $(CURDIR) ${BUILDPATH}/src/github.com/dpgoetz/andrewd
+	cd ${BUILDPATH}/src/github.com/dpgoetz/andrewd; make get all
+	rm -rf ${BUILDPATH}
+
+override_dh_auto_install:
+override_dh_auto_test:
+override_dh_auto_clean:
+
+override_dh_installinit:
+	dh_installinit --no-start
+	dh_installinit --no-start -pandrewd --init-script=andrewd

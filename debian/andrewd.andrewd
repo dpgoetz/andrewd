@@ -1,0 +1,67 @@
+#! /bin/bash
+### BEGIN INIT INFO
+# Provides:          andrewd
+# Required-Start:    $remote_fs
+# Required-Stop:     $remote_fs
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: Swift Ring Auto Eject
+# Description:       Monitors swift-recon and removes devices from ring
+### END INIT INFO
+
+PATH=/sbin:/usr/sbin:/bin:/usr/bin
+ANDREWD=/usr/bin/andrewd
+PIDFILE="/var/run/hummingbird/andrewd.pid"
+SERVICE=$(basename $0)
+
+test -x $ANDREWD || exit 0
+
+# Make sure only root can run our script
+if [[ $EUID -ne 0 ]]; then
+   echo "This script must be run as root" 1>&2
+   exit 1
+fi
+
+
+andrewd_status()
+{
+  if [ ! -f $PIDFILE ] ; then
+    # program not running
+    return 3
+  fi
+
+  for pid in $(cat $PIDFILE) ; do
+    if ! ps --no-headers p "$pid" | egrep "$SERVICE " > /dev/null ; then
+      # program running, bogus pidfile
+      return 1
+    fi
+  done
+
+  return 0
+}
+
+
+case "$1" in 
+  status)
+      andrewd_status
+      ret=$?
+      case "$ret" in
+          0)
+            echo "$SERVICE is running."
+            ;;
+          1)
+            echo "$SERVICE dead, but $PIDFILE exists."
+            ;;
+          *)
+            echo "$SERVICE not running."
+            ;;
+      esac
+      exit $ret
+      ;;
+  *)
+      $ANDREWD $1
+      ;;
+esac 
+
+
+
