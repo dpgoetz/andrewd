@@ -54,7 +54,7 @@ func getDispersionObjects(oring ring.Ring, objNames chan string) {
 	}
 }
 
-func PutDispersionObjects(hClient client.ProxyClient) bool {
+func PutDispersionObjects(hClient client.ProxyClient, objRing ring.Ring) bool {
 	status := hClient.PutAccount(Account, common.Map2Headers(map[string]string{
 		"Content-Length": "0",
 		"Content-Type":   "text",
@@ -72,7 +72,6 @@ func PutDispersionObjects(hClient client.ProxyClient) bool {
 	numObjs := uint64(0)
 	successes := uint64(0)
 	objNames := make(chan string)
-	_, _, objRing := hClient.GetRings()
 	go getDispersionObjects(objRing, objNames)
 
 	start := time.Now()

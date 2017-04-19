@@ -26,6 +26,7 @@ import (
 	"github.com/dpgoetz/andrewd"
 	"github.com/troubling/hummingbird/client"
 	"github.com/troubling/hummingbird/common/conf"
+	"github.com/troubling/hummingbird/common/ring"
 	"github.com/troubling/hummingbird/common/srv"
 )
 
@@ -195,11 +196,33 @@ func main() {
 		runFlags.Parse(flag.Args()[1:])
 		fmt.Println("Starting to put objects")
 
-		hClient, err := client.NewProxyDirectClient()
+		hashPathPrefix, hashPathSuffix, err := conf.GetHashPrefixAndSuffix()
+		if err != nil {
+			fmt.Printf("Could not load hashPathSuffix: %s\n", err)
+			return
+		}
+		accountRing, err := ring.GetRing("account", hashPathPrefix, hashPathSuffix, 0)
+		if err != nil {
+			fmt.Printf("Could not load account ring: %s\n", err)
+			return
+		}
+		containerRing, err := ring.GetRing("container", hashPathPrefix, hashPathSuffix, 0)
+		if err != nil {
+			fmt.Printf("Could not load container ring: %s\n", err)
+			return
+		}
+		objectRing, err := ring.GetRing("object", hashPathPrefix, hashPathSuffix, 0)
+		if err != nil {
+			fmt.Printf("Could not load object ring: %s\n", err)
+			return
+		}
+
+		hClient, err := client.NewProxyDirectClientWithRings(
+			accountRing, containerRing, objectRing)
 		if err != nil {
 			fmt.Println(fmt.Sprintf("Could not make client: %v", err))
 		}
-		andrewd.PutDispersionObjects(hClient)
+		andrewd.PutDispersionObjects(hClient, objectRing)
 
 	default:
 		flag.Usage()
