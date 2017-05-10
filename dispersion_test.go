@@ -33,8 +33,6 @@ import (
 
 func TestGetDispersionObjects(t *testing.T) {
 
-	hClient, err := client.NewProxyDirectClient()
-	require.Equal(t, err, nil)
 	var reqPaths []string
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,
 		r *http.Request) {
@@ -52,14 +50,10 @@ func TestGetDispersionObjects(t *testing.T) {
 	port, _ := strconv.Atoi(ports)
 
 	fakeDevs := []ring.Device{
-		ring.Device{Ip: host, Port: port, Device: "sda"},
-		ring.Device{Ip: host, Port: port, Device: "sdb"}}
+		{Ip: host, Port: port, Device: "sda"},
+		{Ip: host, Port: port, Device: "sdb"}}
 
-	aring := &FakeRing{Devs: fakeDevs}
-	cring := &FakeRing{Devs: fakeDevs}
 	oring := &FakeRing{Devs: fakeDevs}
-
-	hClient.OverrideRings(aring, cring, oring)
 	dObjs := make(chan string)
 	go getDispersionObjects(oring, dObjs)
 	for val := range dObjs {
@@ -70,9 +64,6 @@ func TestGetDispersionObjects(t *testing.T) {
 
 func TestPutDispersionObjects(t *testing.T) {
 
-	hClient, err := client.NewProxyDirectClient()
-	require.Equal(t, err, nil)
-
 	var reqPaths []string
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,
 		r *http.Request) {
@@ -90,16 +81,19 @@ func TestPutDispersionObjects(t *testing.T) {
 	port, _ := strconv.Atoi(ports)
 
 	fakeDevs := []ring.Device{
-		ring.Device{Ip: host, Port: port, Device: "sda"},
-		ring.Device{Ip: host, Port: port, Device: "sdb"},
-		ring.Device{Ip: host, Port: port, Device: "sdc"}}
+		{Ip: host, Port: port, Device: "sda"},
+		{Ip: host, Port: port, Device: "sdb"},
+		{Ip: host, Port: port, Device: "sdc"}}
 
 	aring := &FakeRing{Devs: fakeDevs}
 	cring := &FakeRing{Devs: fakeDevs}
 	oring := &FakeRing{Devs: fakeDevs}
-	hClient.OverrideRings(aring, cring, oring)
+	hClient, err := client.NewProxyDirectClientWithRings(
+		aring, cring, oring)
+	require.Equal(t, err, nil)
+	//hClient.OverrideRings(aring, cring, oring)
 
-	require.True(t, PutDispersionObjects(hClient))
+	require.True(t, PutDispersionObjects(hClient, oring))
 	require.Equal(t, len(reqPaths), 18)
 
 }
