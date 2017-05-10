@@ -39,9 +39,15 @@ import (
 
 const ONE_DAY = 86400
 
+type LowLevelLogger interface {
+	Err(string) error
+	Info(string) error
+	Debug(string) error
+}
+
 type BirdCatcher struct {
 	oring           ring.Ring
-	logger          srv.LowLevelLogger
+	logger          LowLevelLogger
 	workingDir      string
 	reportDir       string
 	maxAge          time.Duration
@@ -110,12 +116,6 @@ func headers2Map(headers http.Header) map[string]string {
 		m[k] = headers.Get(k)
 	}
 	return m
-}
-
-type LowLevelLogger interface {
-	Err(string) error
-	Info(string) error
-	Debug(string) error
 }
 
 type consoleLogger struct{}
