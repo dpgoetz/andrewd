@@ -27,7 +27,6 @@ import (
 	"github.com/troubling/hummingbird/client"
 	"github.com/troubling/hummingbird/common/conf"
 	"github.com/troubling/hummingbird/common/ring"
-	"github.com/troubling/hummingbird/common/srv"
 )
 
 var Version = "0.1"
@@ -191,7 +190,7 @@ func main() {
 		ProcessControlCommand(RestartDaemon)
 	case "run":
 		runFlags.Parse(flag.Args()[1:])
-		srv.RunDaemon(andrewd.GetBirdCatcher, runFlags)
+		andrewd.RunDaemon(andrewd.GetBirdCatcher, runFlags)
 	case "populate-dispersion":
 		runFlags.Parse(flag.Args()[1:])
 		fmt.Println("Starting to put objects")

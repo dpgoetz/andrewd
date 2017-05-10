@@ -25,7 +25,6 @@ import (
 	"github.com/troubling/hummingbird/common"
 	"github.com/troubling/hummingbird/common/conf"
 	"github.com/troubling/hummingbird/common/ring"
-	"github.com/troubling/hummingbird/common/srv"
 )
 
 var Account = ".dispersion"
@@ -33,7 +32,7 @@ var Container = "objs"
 
 type DispersionMonitor struct {
 	oring  ring.Ring
-	logger srv.LowLevelLogger
+	logger LowLevelLogger
 }
 
 func getDispersionObjects(oring ring.Ring, objNames chan string) {
@@ -125,7 +124,7 @@ func (dm *DispersionMonitor) RunForever() {
 
 }
 
-func GetDispersionMonitor(serverconf conf.Config, flags *flag.FlagSet) (srv.Daemon, error) {
+func GetDispersionMonitor(serverconf conf.Config, flags *flag.FlagSet) (Daemon, error) {
 
 	hashPathPrefix, hashPathSuffix, err := conf.GetHashPrefixAndSuffix()
 	if err != nil {
@@ -138,7 +137,7 @@ func GetDispersionMonitor(serverconf conf.Config, flags *flag.FlagSet) (srv.Daem
 		return nil, err
 	}
 
-	logger, err := srv.SetupLogger(serverconf, flags, "andrewd", "dispersion")
+	logger, err := SetupLogger(serverconf, flags, "andrewd", "dispersion")
 
 	dm := DispersionMonitor{
 		oring:  objRing,
