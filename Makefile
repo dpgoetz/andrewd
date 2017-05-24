@@ -5,8 +5,8 @@ all: bin/andrewd
 bin:
 	mkdir -p bin
 
-bin/andrewd: bin */*.go
-	go build -o bin/andrewd cmd/andrewd.go
+bin/andrewd: bin *.go
+	go build -o bin/andrewd cmd/andrewd/andrewd.go
 
 get:
 	go get -t ./...
