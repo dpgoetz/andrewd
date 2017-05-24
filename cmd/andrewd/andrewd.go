@@ -200,7 +200,6 @@ func main() {
 		}
 		policy := runFlags.Lookup("p").Value.(flag.Getter).Get().(string)
 		andrewd.PutDispersionObjects(hClient, "objs"+policy, policy)
-
 	default:
 		flag.Usage()
 	}
