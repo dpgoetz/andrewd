@@ -26,7 +26,6 @@ import (
 	"github.com/dpgoetz/andrewd"
 	"github.com/troubling/hummingbird/client"
 	"github.com/troubling/hummingbird/common/conf"
-	"github.com/troubling/hummingbird/common/ring"
 )
 
 var Version = "0.1"
@@ -157,6 +156,7 @@ func main() {
 	runFlags.Bool("once", false, "Run one pass of andrewd")
 	runFlags.String("c", getConfig(), "Config file to use")
 	runFlags.Bool("v", false, "Send all log messages to the console (if -d is not specified)")
+	runFlags.String("p", "", "The name of the storage policy to use")
 	runFlags.Usage = func() {
 		fmt.Fprintf(os.Stderr, "andrewd run [ARGS]\n")
 		runFlags.PrintDefaults()
@@ -194,34 +194,12 @@ func main() {
 	case "populate-dispersion":
 		runFlags.Parse(flag.Args()[1:])
 		fmt.Println("Starting to put objects")
-
-		hashPathPrefix, hashPathSuffix, err := conf.GetHashPrefixAndSuffix()
-		if err != nil {
-			fmt.Printf("Could not load hashPathSuffix: %s\n", err)
-			return
-		}
-		accountRing, err := ring.GetRing("account", hashPathPrefix, hashPathSuffix, 0)
-		if err != nil {
-			fmt.Printf("Could not load account ring: %s\n", err)
-			return
-		}
-		containerRing, err := ring.GetRing("container", hashPathPrefix, hashPathSuffix, 0)
-		if err != nil {
-			fmt.Printf("Could not load container ring: %s\n", err)
-			return
-		}
-		objectRing, err := ring.GetRing("object", hashPathPrefix, hashPathSuffix, 0)
-		if err != nil {
-			fmt.Printf("Could not load object ring: %s\n", err)
-			return
-		}
-
-		hClient, err := client.NewProxyDirectClientWithRings(
-			accountRing, containerRing, objectRing)
+		hClient, err := client.NewProxyDirectClient(nil)
 		if err != nil {
 			fmt.Println(fmt.Sprintf("Could not make client: %v", err))
 		}
-		andrewd.PutDispersionObjects(hClient, objectRing)
+		policy := runFlags.Lookup("p").Value.(flag.Getter).Get().(string)
+		andrewd.PutDispersionObjects(hClient, "objs"+policy, policy)
 
 	default:
 		flag.Usage()
