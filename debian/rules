@@ -11,7 +11,7 @@ override_dh_auto_build:
 	mkdir -p ${BUILDPATH}/src/github.com/dpgoetz
 	ln -s $(CURDIR) ${BUILDPATH}/src/github.com/dpgoetz/andrewd
 	cd ${BUILDPATH}/src/github.com/dpgoetz/andrewd; make get
-	cd ${BUILDPATH}/src/github.com/dpgoetz/andrewd; go build
+	cd ${BUILDPATH}/src/github.com/dpgoetz/andrewd; go install ./...
 	rm -rf ${BUILDPATH}
 
 override_dh_auto_install:
