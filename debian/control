@@ -1,0 +1,15 @@
+Source: andrewd
+Section: devel
+Priority: extra
+Maintainer: David Goetz <david.goetz@rackspace.com>
+Build-Depends: debhelper (>= 7.0.50~)
+Standards-Version: 3.9.3
+Homepage: http://github.com/dpgoetz/andrewd
+
+Package: andrewd
+Architecture: amd64
+Depends: ${misc:Depends}
+Description: A daemon that monitors a swift cluster and
+ sets device weights in the object ring when they have
+ been unmounted for a specified amount of time.
+
