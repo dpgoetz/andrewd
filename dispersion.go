@@ -16,7 +16,6 @@
 package andrewd
 
 import (
-	"bytes"
 	"flag"
 	"fmt"
 	"time"
@@ -70,29 +69,30 @@ func PutDispersionObjects(hClient client.ProxyClient, objRing ring.Ring) bool {
 	}
 	numObjs := uint64(0)
 	successes := uint64(0)
-	objNames := make(chan string)
-	go getDispersionObjects(objRing, objNames)
-
-	start := time.Now()
-
-	for obj := range objNames {
-		numObjs += 1
-		if numObjs%1000 == 0 {
-			timeSpent := time.Since(start).Seconds()
-			partsSec := float64(numObjs) / timeSpent
-			hoursRem := float64(objRing.PartitionCount()-numObjs) / partsSec / 60 / 60
-			fmt.Println(fmt.Sprintf("So far put %d objects (%.2f/s) %.1fh remaining.", numObjs, partsSec, hoursRem))
-		}
-		if status = hClient.PutObject(Account, Container, obj, common.Map2Headers(map[string]string{
-			"Content-Length": "0",
-			"Content-Type":   "text",
-			"X-Timestamp":    fmt.Sprintf("%d", time.Now().Unix())}),
-			bytes.NewReader([]byte(""))); status/100 == 2 {
-			successes += 1
-		} else {
-			fmt.Println(fmt.Sprintf("PUT to %s/%s got %v", Container, obj, status))
-		}
-	}
+	/*
+		objNames := make(chan string)
+			go getDispersionObjects(objRing, objNames)
+			start := time.Now()
+			   this doesnt work right now
+			   	for obj := range objNames {
+			   		numObjs += 1
+			   		if numObjs%1000 == 0 {
+			   			timeSpent := time.Since(start).Seconds()
+			   			partsSec := float64(numObjs) / timeSpent
+			   			hoursRem := float64(objRing.PartitionCount()-numObjs) / partsSec / 60 / 60
+			   			fmt.Println(fmt.Sprintf("So far put %d objects (%.2f/s) %.1fh remaining.", numObjs, partsSec, hoursRem))
+			   		}
+			   			if status = hClient.PutObject(Account, Container, obj, common.Map2Headers(map[string]string{
+			   				"Content-Length": "0",
+			   				"Content-Type":   "text",
+			   				"X-Timestamp":    fmt.Sprintf("%d", time.Now().Unix())}),
+			   				bytes.NewReader([]byte(""))); status/100 == 2 {
+			   				successes += 1
+			   			} else {
+			   				fmt.Println(fmt.Sprintf("PUT to %s/%s got %v", Container, obj, status))
+			   			}
+			   	}
+	*/
 	success := successes == numObjs
 	if success {
 		fmt.Println(fmt.Sprintf("All %d Dispersion Objects PUT successfully!!", numObjs))
