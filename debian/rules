@@ -2,7 +2,7 @@
 
 BUILDPATH := $(shell mktemp -d)
 export GOPATH=${BUILDPATH}
-export PATH=$PATH:/usr/local/go/bin
+PATH := ${PATH}:/usr/local/go/bin
 
 %:
 	dh $@
