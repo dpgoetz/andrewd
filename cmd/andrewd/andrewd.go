@@ -194,12 +194,12 @@ func main() {
 	case "populate-dispersion":
 		runFlags.Parse(flag.Args()[1:])
 		fmt.Println("Starting to put objects")
-		hClient, err := client.NewProxyDirectClient(nil)
+		pdc, err := client.NewProxyDirectClient(nil)
 		if err != nil {
 			fmt.Println(fmt.Sprintf("Could not make client: %v", err))
 		}
 		policy := runFlags.Lookup("p").Value.(flag.Getter).Get().(string)
-		andrewd.PutDispersionObjects(hClient, "objs"+policy, policy)
+		andrewd.PutDispersionObjects(client.NewProxyClient(pdc, nil, nil), "objs"+policy, policy)
 	default:
 		flag.Usage()
 	}

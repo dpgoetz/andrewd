@@ -28,6 +28,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"github.com/troubling/hummingbird/client"
 	"github.com/troubling/hummingbird/common/ring"
 )
 
@@ -104,6 +105,10 @@ func (c *testPutDispersionObjectsClient) PostContainer(account string, container
 
 func (c *testPutDispersionObjectsClient) GetContainer(account string, container string, options map[string]string, headers http.Header) (io.ReadCloser, http.Header, int) {
 	return nil, nil, 200
+}
+
+func (c *testPutDispersionObjectsClient) GetContainerInfo(account string, container string) *client.ContainerInfo {
+	return nil
 }
 
 func (c *testPutDispersionObjectsClient) HeadContainer(account string, container string, headers http.Header) (http.Header, int) {
