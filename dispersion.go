@@ -53,12 +53,13 @@ func getDispersionObjects(container string, oring ring.Ring, objNames chan strin
 }
 
 func PutDispersionObjects(hClient client.ProxyClient, container string, policy string) bool {
-	status := hClient.PutAccount(Account, common.Map2Headers(map[string]string{
+	resp := hClient.PutAccount(Account, common.Map2Headers(map[string]string{
 		"Content-Length": "0",
 		"Content-Type":   "text",
 		"X-Timestamp":    fmt.Sprintf("%d", time.Now().Unix())}))
-	if status/100 != 2 {
-		fmt.Println(fmt.Sprintf("Could not put account: %v", status))
+	resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		fmt.Println(fmt.Sprintf("Could not put account: %v", resp.StatusCode))
 		return false
 	}
 	headers := map[string]string{
@@ -69,18 +70,18 @@ func PutDispersionObjects(hClient client.ProxyClient, container string, policy s
 	if policy != "" {
 		headers["X-Storage-Policy"] = policy
 	}
-	status = hClient.PutContainer(Account, container, common.Map2Headers(headers))
-	if status/100 != 2 {
-		fmt.Println(fmt.Sprintf("Could not put container: %s %v", container, status))
+	resp = hClient.PutContainer(Account, container, common.Map2Headers(headers))
+	if resp.StatusCode/100 != 2 {
+		fmt.Println(fmt.Sprintf("Could not put container: %s %v", container, resp.StatusCode))
 		return false
 	}
 	numObjs := uint64(0)
 	successes := uint64(0)
 	objNames := make(chan string)
 	var objRing ring.Ring
-	objRing, status = hClient.ObjectRingFor(Account, container)
-	if objRing == nil || status != 200 {
-		fmt.Println(fmt.Sprintf("Could not obtain object ring: %v", status))
+	objRing, resp = hClient.ObjectRingFor(Account, container)
+	if objRing == nil || resp.StatusCode/100 != 2 {
+		fmt.Println(fmt.Sprintf("Could not obtain object ring: %v", resp.StatusCode))
 		return false
 	}
 	go getDispersionObjects(container, objRing, objNames)
@@ -95,14 +96,14 @@ func PutDispersionObjects(hClient client.ProxyClient, container string, policy s
 			hoursRem := float64(objRing.PartitionCount()-numObjs) / partsSec / 60 / 60
 			fmt.Println(fmt.Sprintf("So far put %d objects (%.2f/s) %.1fh remaining.", numObjs, partsSec, hoursRem))
 		}
-		if _, status = hClient.PutObject(Account, container, obj, common.Map2Headers(map[string]string{
+		if resp = hClient.PutObject(Account, container, obj, common.Map2Headers(map[string]string{
 			"Content-Length": "0",
 			"Content-Type":   "text",
 			"X-Timestamp":    fmt.Sprintf("%d", time.Now().Unix())}),
-			bytes.NewReader([]byte(""))); status/100 == 2 {
+			bytes.NewReader([]byte(""))); resp.StatusCode/100 == 2 {
 			successes += 1
 		} else {
-			fmt.Println(fmt.Sprintf("PUT to %s/%s got %v", container, obj, status))
+			fmt.Println(fmt.Sprintf("PUT to %s/%s got %v", container, obj, resp.StatusCode))
 		}
 	}
 	success := successes == numObjs

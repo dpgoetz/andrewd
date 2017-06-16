@@ -75,71 +75,71 @@ type testPutDispersionObjectsClient struct {
 	objPuts int
 }
 
-func (c *testPutDispersionObjectsClient) PutAccount(account string, headers http.Header) int {
-	return 200
+func (c *testPutDispersionObjectsClient) PutAccount(account string, headers http.Header) *http.Response {
+	return client.ResponseStub(200, "")
 }
 
-func (c *testPutDispersionObjectsClient) PostAccount(account string, headers http.Header) int {
-	return 200
+func (c *testPutDispersionObjectsClient) PostAccount(account string, headers http.Header) *http.Response {
+	return client.ResponseStub(200, "")
 }
 
-func (c *testPutDispersionObjectsClient) GetAccount(account string, options map[string]string, headers http.Header) (io.ReadCloser, http.Header, int) {
-	return nil, nil, 200
+func (c *testPutDispersionObjectsClient) GetAccount(account string, options map[string]string, headers http.Header) *http.Response {
+	return client.ResponseStub(200, "")
 }
 
-func (c *testPutDispersionObjectsClient) HeadAccount(account string, headers http.Header) (http.Header, int) {
-	return nil, 200
+func (c *testPutDispersionObjectsClient) HeadAccount(account string, headers http.Header) *http.Response {
+	return client.ResponseStub(200, "")
 }
 
-func (c *testPutDispersionObjectsClient) DeleteAccount(account string, headers http.Header) int {
-	return 200
+func (c *testPutDispersionObjectsClient) DeleteAccount(account string, headers http.Header) *http.Response {
+	return client.ResponseStub(200, "")
 }
 
-func (c *testPutDispersionObjectsClient) PutContainer(account string, container string, headers http.Header) int {
-	return 200
+func (c *testPutDispersionObjectsClient) PutContainer(account string, container string, headers http.Header) *http.Response {
+	return client.ResponseStub(200, "")
 }
 
-func (c *testPutDispersionObjectsClient) PostContainer(account string, container string, headers http.Header) int {
-	return 200
+func (c *testPutDispersionObjectsClient) PostContainer(account string, container string, headers http.Header) *http.Response {
+	return client.ResponseStub(200, "")
 }
 
-func (c *testPutDispersionObjectsClient) GetContainer(account string, container string, options map[string]string, headers http.Header) (io.ReadCloser, http.Header, int) {
-	return nil, nil, 200
+func (c *testPutDispersionObjectsClient) GetContainer(account string, container string, options map[string]string, headers http.Header) *http.Response {
+	return client.ResponseStub(200, "")
 }
 
 func (c *testPutDispersionObjectsClient) GetContainerInfo(account string, container string) *client.ContainerInfo {
 	return nil
 }
 
-func (c *testPutDispersionObjectsClient) HeadContainer(account string, container string, headers http.Header) (http.Header, int) {
-	return nil, 200
+func (c *testPutDispersionObjectsClient) HeadContainer(account string, container string, headers http.Header) *http.Response {
+	return client.ResponseStub(200, "")
 }
 
-func (c *testPutDispersionObjectsClient) DeleteContainer(account string, container string, headers http.Header) int {
-	return 200
+func (c *testPutDispersionObjectsClient) DeleteContainer(account string, container string, headers http.Header) *http.Response {
+	return client.ResponseStub(200, "")
 }
 
-func (c *testPutDispersionObjectsClient) PutObject(account string, container string, obj string, headers http.Header, src io.Reader) (http.Header, int) {
+func (c *testPutDispersionObjectsClient) PutObject(account string, container string, obj string, headers http.Header, src io.Reader) *http.Response {
 	c.objPuts++
-	return nil, 200
+	return client.ResponseStub(200, "")
 }
 
-func (c *testPutDispersionObjectsClient) PostObject(account string, container string, obj string, headers http.Header) int {
-	return 200
+func (c *testPutDispersionObjectsClient) PostObject(account string, container string, obj string, headers http.Header) *http.Response {
+	return client.ResponseStub(200, "")
 }
 
-func (c *testPutDispersionObjectsClient) GetObject(account string, container string, obj string, headers http.Header) (io.ReadCloser, http.Header, int) {
-	return nil, nil, 200
+func (c *testPutDispersionObjectsClient) GetObject(account string, container string, obj string, headers http.Header) *http.Response {
+	return client.ResponseStub(200, "")
 }
 
-func (c *testPutDispersionObjectsClient) HeadObject(account string, container string, obj string, headers http.Header) (http.Header, int) {
-	return nil, 200
+func (c *testPutDispersionObjectsClient) HeadObject(account string, container string, obj string, headers http.Header) *http.Response {
+	return client.ResponseStub(200, "")
 }
 
-func (c *testPutDispersionObjectsClient) DeleteObject(account string, container string, obj string, headers http.Header) int {
-	return 200
+func (c *testPutDispersionObjectsClient) DeleteObject(account string, container string, obj string, headers http.Header) *http.Response {
+	return client.ResponseStub(200, "")
 }
 
-func (c *testPutDispersionObjectsClient) ObjectRingFor(account string, container string) (ring.Ring, int) {
-	return c.objRing, 200
+func (c *testPutDispersionObjectsClient) ObjectRingFor(account string, container string) (ring.Ring, *http.Response) {
+	return c.objRing, client.ResponseStub(200, "")
 }
