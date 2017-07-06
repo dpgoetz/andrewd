@@ -17,13 +17,11 @@ package andrewd
 
 import (
 	"bytes"
-	"flag"
 	"fmt"
 	"time"
 
 	"github.com/troubling/hummingbird/client"
 	"github.com/troubling/hummingbird/common"
-	"github.com/troubling/hummingbird/common/conf"
 	"github.com/troubling/hummingbird/common/ring"
 )
 
@@ -52,7 +50,7 @@ func getDispersionObjects(container string, oring ring.Ring, objNames chan strin
 	}
 }
 
-func PutDispersionObjects(hClient client.ProxyClient, container string, policy string) bool {
+func PutDispersionObjects(hClient client.ProxyClient, policy string) bool {
 	resp := hClient.PutAccount(Account, common.Map2Headers(map[string]string{
 		"Content-Length": "0",
 		"Content-Type":   "text",
@@ -70,6 +68,10 @@ func PutDispersionObjects(hClient client.ProxyClient, container string, policy s
 	if policy != "" {
 		headers["X-Storage-Policy"] = policy
 	}
+	container := "disp-objs-0"
+	if policy != "" {
+		container = "disp-objs-" + policy
+	}
 	resp = hClient.PutContainer(Account, container, common.Map2Headers(headers))
 	if resp.StatusCode/100 != 2 {
 		fmt.Println(fmt.Sprintf("Could not put container: %s %v", container, resp.StatusCode))
@@ -80,7 +82,7 @@ func PutDispersionObjects(hClient client.ProxyClient, container string, policy s
 	objNames := make(chan string)
 	var objRing ring.Ring
 	objRing, resp = hClient.ObjectRingFor(Account, container)
-	if objRing == nil || resp.StatusCode/100 != 2 {
+	if objRing == nil || resp != nil {
 		fmt.Println(fmt.Sprintf("Could not obtain object ring: %v", resp.StatusCode))
 		return false
 	}
@@ -137,6 +139,7 @@ func (dm *DispersionMonitor) RunForever() {
 
 }
 
+/*
 func GetDispersionMonitor(serverconf conf.Config, flags *flag.FlagSet) (Daemon, error) {
 
 	hashPathPrefix, hashPathSuffix, err := conf.GetHashPrefixAndSuffix()
@@ -158,3 +161,4 @@ func GetDispersionMonitor(serverconf conf.Config, flags *flag.FlagSet) (Daemon, 
 	}
 	return &dm, nil
 }
+*/

@@ -25,17 +25,22 @@ import (
 	"net/http"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/troubling/hummingbird/accountserver"
+	"github.com/troubling/hummingbird/client"
 	"github.com/troubling/hummingbird/common"
 	"github.com/troubling/hummingbird/common/conf"
 	"github.com/troubling/hummingbird/common/ring"
+	"github.com/troubling/hummingbird/containerserver"
 )
 
 const ONE_DAY = 86400
+const SLEEP_TIME = 1 * time.Millisecond //100 * time.Millisecond
 
 type BirdCatcher struct {
 	oring           ring.Ring
@@ -192,9 +197,8 @@ func (bc *BirdCatcher) gatherReconData(servers []ipPort) (devs []*ReconData, dow
 	return devs, downServers
 }
 
-func (bc *BirdCatcher) getDb() (*sql.DB, error) {
+func (bc *BirdCatcher) getDbAndLock() (*sql.DB, error) {
 	bc.dbl.Lock()
-	defer bc.dbl.Unlock()
 	if bc.db != nil {
 		if err := bc.db.Ping(); err == nil {
 			return bc.db, nil
@@ -260,7 +264,27 @@ func (bc *BirdCatcher) getDb() (*sql.DB, error) {
 			BEGIN
 				INSERT INTO device_log (deviceId, mounted, reachable)  
 				VALUES (OLD.id, OLD.mounted, OLD.reachable);
-			END;`
+			END;
+
+		CREATE TABLE IF NOT EXISTS dispersion_report ( 
+			id INTEGER PRIMARY KEY,
+			create_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+			policy VARCHAR(40) NOT NULL,
+			objects INTEGER NOT NULL,
+			objects_found INTEGER NOT NULL,
+			report_text TEXT
+			);
+
+		CREATE TABLE IF NOT EXISTS dispersion_report_detail ( 
+			id INTEGER PRIMARY KEY,
+			run_start_time TIMESTAMP NOT NULL,
+			policy VARCHAR(40) NOT NULL,
+			partition_object_name INTEGER NOT NULL,
+			objects_found INTEGER NOT NULL,
+			objects_need INTEGER NOT NULL,
+			create_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		); 
+			`
 	_, err = tx.Exec(sqlCreate)
 	if err != nil {
 		return nil, err
@@ -294,9 +318,10 @@ func (bc *BirdCatcher) getRingData() (map[string]ring.Device, []ipPort) {
 }
 
 func (bc *BirdCatcher) needRingUpdate() bool {
-	db, err := bc.getDb()
+	db, err := bc.getDbAndLock()
+	defer bc.dbl.Unlock()
 	if err != nil {
-		bc.logger.Err(fmt.Sprintf("ERROR: getDb for needRingUpdate: %v", err))
+		bc.logger.Err(fmt.Sprintf("ERROR: getDbAndLock for needRingUpdate: %v", err))
 		return false
 	}
 	// need to check for no rows
@@ -329,7 +354,8 @@ func (bc *BirdCatcher) updateDb() error {
 		}
 	}
 
-	db, err := bc.getDb()
+	db, err := bc.getDbAndLock()
+	defer bc.dbl.Unlock()
 	if err != nil {
 		return err
 	}
@@ -401,7 +427,8 @@ func (bc *BirdCatcher) getDevicesToUnmount() (badDevices []ring.Device, err erro
 			zeroedDevices[bc.deviceId(dev.Ip, dev.Port, dev.Device)] = true
 		}
 	}
-	db, err := bc.getDb()
+	db, err := bc.getDbAndLock()
+	defer bc.dbl.Unlock()
 	if err != nil {
 		return nil, err
 	}
@@ -474,10 +501,13 @@ func (bc *BirdCatcher) updateRing() (outputStr string, err error) {
 			bc.LogInfo("Rebalancing ring")
 		}
 	}
-	db, err := bc.getDb()
+	db, err := bc.getDbAndLock()
+	defer bc.dbl.Unlock()
 	if err != nil {
 		return "", err
 	}
+	bc.dbl.Lock()
+	defer bc.dbl.Unlock()
 	tx, err := db.Begin()
 	if err != nil {
 		return "", err
@@ -500,7 +530,8 @@ func (bc *BirdCatcher) updateRing() (outputStr string, err error) {
 }
 
 func (bc *BirdCatcher) logRun(success bool, errText string) error {
-	db, err := bc.getDb()
+	db, err := bc.getDbAndLock()
+	defer bc.dbl.Unlock()
 	if err != nil {
 		return err
 	}
@@ -520,7 +551,8 @@ func (bc *BirdCatcher) logRun(success bool, errText string) error {
 }
 
 func (bc *BirdCatcher) getReportData() (*ReportData, error) {
-	db, err := bc.getDb()
+	db, err := bc.getDbAndLock()
+	defer bc.dbl.Unlock()
 	if err != nil {
 		return nil, err
 	}
@@ -606,20 +638,137 @@ func (bc *BirdCatcher) produceReport() error {
 	return ioutil.WriteFile(reportLoc, d, 0644)
 }
 
-func (r *BirdCatcher) LogError(format string, args ...interface{}) {
-	r.logger.Err(fmt.Sprintf(format, args...))
+func (bc *BirdCatcher) logDispersionError(text string) {
+	// make a dispersion_report with ^^ as text
+	return
 }
 
-func (r *BirdCatcher) LogDebug(format string, args ...interface{}) {
-	r.logger.Debug(fmt.Sprintf(format, args...))
+func (bc *BirdCatcher) makeDispersionReport(policy string, objsNeed int, objsFound int, probObjects map[string]int) {
+
+	db, err := bc.getDbAndLock()
+	defer bc.dbl.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	report := `
+	
+	`
+	_, err = tx.Exec("INSERT INTO dispersion_report (policy, objects, objects_found, report_text) VALUES (?,?)", policy, objsNeed, objsFound, report)
+	if err != nil {
+		return err
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	return nil
 }
 
-func (r *BirdCatcher) LogInfo(format string, args ...interface{}) {
-	r.logger.Info(fmt.Sprintf(format, args...))
+func (bc *BirdCatcher) watchDispersion() {
+	pdc, err := client.NewProxyDirectClient(nil)
+	if err != nil {
+		bc.logDispersionError(fmt.Sprintf("Could not make client: %v", err))
+		return
+	}
+	c := client.NewProxyClient(pdc, nil, nil)
+	resp := c.GetAccount(Account, map[string]string{"format": "json", "prefix": "disp-objs-"}, http.Header{})
+	var cRecords []accountserver.ContainerListingRecord
+	err = json.NewDecoder(resp.Body).Decode(&cRecords)
+	if err != nil {
+		bc.logDispersionError(fmt.Sprintf("Could not get container listing: %v", err))
+		return
+	}
+	fmt.Println("lalalala: ", cRecords)
+	dirClient := http.Client{Timeout: 10 * time.Second}
+
+	for _, cr := range cRecords {
+		var objRing ring.Ring
+		probObjs := map[string]int{}
+		objsNeed := 0
+		objsFound := 0
+		contArr := strings.Split(cr.Name, "-")
+		if len(contArr) != 3 {
+			continue
+		}
+		policy = contArr[2]
+		objRing, resp = c.ObjectRingFor(Account, cr.Name)
+		if resp != nil {
+			bc.logDispersionError(
+				fmt.Sprintf("error getting obj ring for: %v", cr.Name))
+			return
+		}
+		marker := ""
+		for true {
+			var ors []containerserver.ObjectListingRecord
+			resp := c.GetContainer(Account, cr.Name, map[string]string{"format": "json", "marker": marker}, http.Header{})
+			err = json.NewDecoder(resp.Body).Decode(&ors)
+			if err != nil {
+				bc.logDispersionError(fmt.Sprintf("error in container listing: %v", cr.Name))
+				return
+			}
+			if len(ors) == 0 {
+				break
+			}
+			for _, objRec := range ors {
+				objArr := strings.Split(objRec.Name, "-")
+				if len(objArr) != 2 {
+					continue
+				}
+				partition, e := strconv.ParseUint(objArr[0], 10, 64)
+				if e != nil {
+					continue
+				}
+				nodes := objRing.GetNodes(partition)
+				nodesFound := 0
+				for _, device := range nodes {
+					url := fmt.Sprintf("http://%s:%d/%s/%d/%s/%s/%s", device.Ip, device.Port, device.Device, partition,
+						common.Urlencode(Account), common.Urlencode(cr.Name), common.Urlencode(objRec.Name))
+					req, err := http.NewRequest("HEAD", url, nil)
+					resp, err := dirClient.Do(req)
+					if err == nil && resp.StatusCode/100 == 2 {
+						nodesFound += 1
+					}
+					if resp != nil {
+						resp.Body.Close()
+					}
+				}
+				time.Sleep(SLEEP_TIME)
+				if len(nodes) != nodesFound {
+					probObjs[objRec.Name] = nodesFound
+				}
+				objsNeed += len(nodes)
+				objsFound += nodesFound
+
+				marker = objRec.Name
+			}
+		}
+		fmt.Println("the probObjs: ", probObjs)
+		bc.makeDispersionReport(policy, objsNeed, objsFound, probObjs)
+
+	}
+
+}
+
+func (bc *BirdCatcher) LogError(format string, args ...interface{}) {
+	bc.logger.Err(fmt.Sprintf(format, args...))
+}
+
+func (bc *BirdCatcher) LogDebug(format string, args ...interface{}) {
+	bc.logger.Debug(fmt.Sprintf(format, args...))
+}
+
+func (bc *BirdCatcher) LogInfo(format string, args ...interface{}) {
+	bc.logger.Info(fmt.Sprintf(format, args...))
 }
 
 func (bc *BirdCatcher) Run() {
 	bc.LogInfo("AndrewD Starting Run")
+	bc.watchDispersion()
+	return
 
 	err := bc.updateDb()
 	var msg string

@@ -199,7 +199,7 @@ func main() {
 			fmt.Println(fmt.Sprintf("Could not make client: %v", err))
 		}
 		policy := runFlags.Lookup("p").Value.(flag.Getter).Get().(string)
-		andrewd.PutDispersionObjects(client.NewProxyClient(pdc, nil, nil), "objs"+policy, policy)
+		andrewd.PutDispersionObjects(client.NewProxyClient(pdc, nil, nil), policy)
 	default:
 		flag.Usage()
 	}

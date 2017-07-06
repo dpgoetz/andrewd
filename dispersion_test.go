@@ -66,7 +66,7 @@ func TestGetDispersionObjects(t *testing.T) {
 
 func TestPutDispersionObjects(t *testing.T) {
 	c := &testPutDispersionObjectsClient{objRing: &FakeRing{Devs: []ring.Device{{Device: "sda"}, {Device: "sdb"}, {Device: "sdc"}}}}
-	require.True(t, PutDispersionObjects(c, "objs", ""))
+	require.True(t, PutDispersionObjects(c, ""))
 	require.Equal(t, 4, c.objPuts)
 }
 
