@@ -107,8 +107,8 @@ func (c *testPutDispersionObjectsClient) GetContainer(account string, container 
 	return client.ResponseStub(200, "")
 }
 
-func (c *testPutDispersionObjectsClient) GetContainerInfo(account string, container string) *client.ContainerInfo {
-	return nil
+func (c *testPutDispersionObjectsClient) GetContainerInfo(account string, container string) (*client.ContainerInfo, error) {
+	return nil, nil
 }
 
 func (c *testPutDispersionObjectsClient) HeadContainer(account string, container string, headers http.Header) *http.Response {
