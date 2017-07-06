@@ -17,6 +17,7 @@ package andrewd
 
 import (
 	"fmt"
+	"io"
 	"io/ioutil"
 	"net"
 	"net/http"
@@ -55,45 +56,90 @@ func TestGetDispersionObjects(t *testing.T) {
 
 	oring := &FakeRing{Devs: fakeDevs}
 	dObjs := make(chan string)
-	go getDispersionObjects(oring, dObjs)
+	container := "objs"
+	go getDispersionObjects(container, oring, dObjs)
 	for val := range dObjs {
-		part := oring.GetPartition(Account, Container, val)
+		part := oring.GetPartition(Account, container, val)
 		require.Equal(t, strings.Index(val, fmt.Sprintf("%d-", part)), 0)
 	}
 }
 
 func TestPutDispersionObjects(t *testing.T) {
+	c := &testPutDispersionObjectsClient{objRing: &FakeRing{Devs: []ring.Device{{Device: "sda"}, {Device: "sdb"}, {Device: "sdc"}}}}
+	require.True(t, PutDispersionObjects(c, "objs", ""))
+	require.Equal(t, 4, c.objPuts)
+}
 
-	var reqPaths []string
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,
-		r *http.Request) {
+type testPutDispersionObjectsClient struct {
+	objRing ring.Ring
+	objPuts int
+}
 
-		reqPaths = append(reqPaths, r.URL.Path)
-		if _, err := ioutil.ReadAll(r.Body); err != nil {
-			w.WriteHeader(500)
-			return
-		}
-		w.WriteHeader(201)
-	}))
-	defer ts.Close()
-	u, _ := url.Parse(ts.URL)
-	host, ports, _ := net.SplitHostPort(u.Host)
-	port, _ := strconv.Atoi(ports)
+func (c *testPutDispersionObjectsClient) PutAccount(account string, headers http.Header) *http.Response {
+	return client.ResponseStub(200, "")
+}
 
-	fakeDevs := []ring.Device{
-		{Ip: host, Port: port, Device: "sda"},
-		{Ip: host, Port: port, Device: "sdb"},
-		{Ip: host, Port: port, Device: "sdc"}}
+func (c *testPutDispersionObjectsClient) PostAccount(account string, headers http.Header) *http.Response {
+	return client.ResponseStub(200, "")
+}
 
-	aring := &FakeRing{Devs: fakeDevs}
-	cring := &FakeRing{Devs: fakeDevs}
-	oring := &FakeRing{Devs: fakeDevs}
-	hClient, err := client.NewProxyDirectClientWithRings(
-		aring, cring, oring)
-	require.Equal(t, err, nil)
-	//hClient.OverrideRings(aring, cring, oring)
+func (c *testPutDispersionObjectsClient) GetAccount(account string, options map[string]string, headers http.Header) *http.Response {
+	return client.ResponseStub(200, "")
+}
 
-	require.True(t, PutDispersionObjects(hClient, oring))
-	require.Equal(t, len(reqPaths), 18)
+func (c *testPutDispersionObjectsClient) HeadAccount(account string, headers http.Header) *http.Response {
+	return client.ResponseStub(200, "")
+}
 
+func (c *testPutDispersionObjectsClient) DeleteAccount(account string, headers http.Header) *http.Response {
+	return client.ResponseStub(200, "")
+}
+
+func (c *testPutDispersionObjectsClient) PutContainer(account string, container string, headers http.Header) *http.Response {
+	return client.ResponseStub(200, "")
+}
+
+func (c *testPutDispersionObjectsClient) PostContainer(account string, container string, headers http.Header) *http.Response {
+	return client.ResponseStub(200, "")
+}
+
+func (c *testPutDispersionObjectsClient) GetContainer(account string, container string, options map[string]string, headers http.Header) *http.Response {
+	return client.ResponseStub(200, "")
+}
+
+func (c *testPutDispersionObjectsClient) GetContainerInfo(account string, container string) *client.ContainerInfo {
+	return nil
+}
+
+func (c *testPutDispersionObjectsClient) HeadContainer(account string, container string, headers http.Header) *http.Response {
+	return client.ResponseStub(200, "")
+}
+
+func (c *testPutDispersionObjectsClient) DeleteContainer(account string, container string, headers http.Header) *http.Response {
+	return client.ResponseStub(200, "")
+}
+
+func (c *testPutDispersionObjectsClient) PutObject(account string, container string, obj string, headers http.Header, src io.Reader) *http.Response {
+	c.objPuts++
+	return client.ResponseStub(200, "")
+}
+
+func (c *testPutDispersionObjectsClient) PostObject(account string, container string, obj string, headers http.Header) *http.Response {
+	return client.ResponseStub(200, "")
+}
+
+func (c *testPutDispersionObjectsClient) GetObject(account string, container string, obj string, headers http.Header) *http.Response {
+	return client.ResponseStub(200, "")
+}
+
+func (c *testPutDispersionObjectsClient) HeadObject(account string, container string, obj string, headers http.Header) *http.Response {
+	return client.ResponseStub(200, "")
+}
+
+func (c *testPutDispersionObjectsClient) DeleteObject(account string, container string, obj string, headers http.Header) *http.Response {
+	return client.ResponseStub(200, "")
+}
+
+func (c *testPutDispersionObjectsClient) ObjectRingFor(account string, container string) (ring.Ring, *http.Response) {
+	return c.objRing, client.ResponseStub(200, "")
 }
