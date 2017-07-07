@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -268,7 +269,7 @@ func (bc *BirdCatcher) getDbAndLock() (*sql.DB, error) {
 
 		CREATE TABLE IF NOT EXISTS dispersion_report ( 
 			id INTEGER PRIMARY KEY,
-			create_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+			create_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 			policy VARCHAR(40) NOT NULL,
 			objects INTEGER NOT NULL,
 			objects_found INTEGER NOT NULL,
@@ -277,14 +278,14 @@ func (bc *BirdCatcher) getDbAndLock() (*sql.DB, error) {
 
 		CREATE TABLE IF NOT EXISTS dispersion_report_detail ( 
 			id INTEGER PRIMARY KEY,
-			run_start_time TIMESTAMP NOT NULL,
+			dispersion_report_id INTEGER NOT NULL,
 			policy VARCHAR(40) NOT NULL,
 			partition_object_name INTEGER NOT NULL,
 			objects_found INTEGER NOT NULL,
 			objects_need INTEGER NOT NULL,
 			create_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		); 
-			`
+		`
 	_, err = tx.Exec(sqlCreate)
 	if err != nil {
 		return nil, err
@@ -643,29 +644,61 @@ func (bc *BirdCatcher) logDispersionError(text string) {
 	return
 }
 
-func (bc *BirdCatcher) makeDispersionReport(policy string, objsNeed int, objsFound int, probObjects map[string]int) {
+func (bc *BirdCatcher) makeDispersionReport(policy string, replicas uint64, goodPartitions int, objsNeed int, objsFound int, probObjects map[string]int) {
 
 	db, err := bc.getDbAndLock()
 	defer bc.dbl.Unlock()
 	if err != nil {
-		return nil, err
+		return
 	}
 	tx, err := db.Begin()
 	if err != nil {
-		return err
+		return
 	}
 	defer tx.Rollback()
-	report := `
-	
-	`
-	_, err = tx.Exec("INSERT INTO dispersion_report (policy, objects, objects_found, report_text) VALUES (?,?)", policy, objsNeed, objsFound, report)
+	objMap := map[int]int{}
+	for _, cnt := range probObjects {
+		objMap[cnt] = objMap[cnt] + 1
+	}
+	objText := []struct {
+		text string
+		cnt  int
+	}{}
+	for pMissing, cnt := range objMap {
+		objText = append(objText, struct {
+			text string
+			cnt  int
+		}{fmt.Sprintf("There were %d partitions missing %d copies.\n", cnt, pMissing), pMissing})
+	}
+	sort.Slice(objText, func(i, j int) bool { return objText[i].cnt < objText[j].cnt })
+	report := fmt.Sprintf("Using storage policy %s\nThere were %d partitions missing 0 copies.\n", policy, goodPartitions)
+	for _, t := range objText {
+		report += t.text
+	}
+	report += fmt.Sprintf("%.2f%% of object copies found (%d of %d)\nSample represents 100%% of the object partition space.\n", float64(objsFound*100)/float64(objsNeed), objsFound, objsNeed)
+
+	fmt.Println(report)
+	r, err := tx.Exec("INSERT INTO dispersion_report (policy, objects, objects_found, report_text) VALUES (?,?,?,?)", policy, objsNeed, objsFound, report)
+	fmt.Println("333: ", err)
 	if err != nil {
-		return err
+		return
 	}
+	rID, _ := r.LastInsertId()
+	recDetail, err := tx.Prepare("INSERT INTO dispersion_report_detail (dispersion_report_id, policy, partition_object_name, objects_found, objects_need) VALUES (?,?,?,?,?)")
+	if err != nil {
+		return
+	}
+	for o, cnt := range probObjects {
+		if _, err := recDetail.Exec(rID, policy, o, cnt, replicas); err != nil {
+			fmt.Println("lalala: ", err)
+			return
+		}
+	}
+	fmt.Println("444: ", rID)
 	if err = tx.Commit(); err != nil {
-		return err
+		return
 	}
-	return nil
+	return
 }
 
 func (bc *BirdCatcher) watchDispersion() {
@@ -690,11 +723,12 @@ func (bc *BirdCatcher) watchDispersion() {
 		probObjs := map[string]int{}
 		objsNeed := 0
 		objsFound := 0
+		goodPartitions := 0
 		contArr := strings.Split(cr.Name, "-")
 		if len(contArr) != 3 {
 			continue
 		}
-		policy = contArr[2]
+		policy := contArr[2]
 		objRing, resp = c.ObjectRingFor(Account, cr.Name)
 		if resp != nil {
 			bc.logDispersionError(
@@ -711,6 +745,7 @@ func (bc *BirdCatcher) watchDispersion() {
 				return
 			}
 			if len(ors) == 0 {
+				fmt.Println("No object records!!!")
 				break
 			}
 			for _, objRec := range ors {
@@ -739,6 +774,8 @@ func (bc *BirdCatcher) watchDispersion() {
 				time.Sleep(SLEEP_TIME)
 				if len(nodes) != nodesFound {
 					probObjs[objRec.Name] = nodesFound
+				} else {
+					goodPartitions += 1
 				}
 				objsNeed += len(nodes)
 				objsFound += nodesFound
@@ -746,8 +783,9 @@ func (bc *BirdCatcher) watchDispersion() {
 				marker = objRec.Name
 			}
 		}
-		fmt.Println("the probObjs: ", probObjs)
-		bc.makeDispersionReport(policy, objsNeed, objsFound, probObjs)
+		//fmt.Println("the probObjs: ", probObjs)
+		fmt.Println("0000")
+		bc.makeDispersionReport(policy, objRing.ReplicaCount(), goodPartitions, objsNeed, objsFound, probObjs)
 
 	}
 
