@@ -96,7 +96,6 @@ type Daemon interface {
 }
 
 func RunDaemon(GetDaemon func(conf.Config, *flag.FlagSet) (Daemon, error), flags *flag.FlagSet) {
-	var daemons []Daemon
 
 	if flags.NArg() != 0 {
 		flags.Usage()
@@ -104,37 +103,32 @@ func RunDaemon(GetDaemon func(conf.Config, *flag.FlagSet) (Daemon, error), flags
 	}
 
 	configFile := flags.Lookup("c").Value.(flag.Getter).Get().(string)
-	configs, err := conf.LoadConfigs(configFile)
+	config, err := conf.LoadConfig(configFile)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error finding configs: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error finding config: %v\n", err)
 		return
 	}
 
 	once := flags.Lookup("once").Value.(flag.Getter).Get() == true
 
-	for _, config := range configs {
-		if daemon, err := GetDaemon(config, flags); err == nil {
-			if once {
-				daemon.Run()
-				fmt.Fprintf(os.Stderr, "Daemon pass completed.\n")
-				daemon.LogError("Daemon pass completed.")
-			} else {
-				daemons = append(daemons, daemon)
-				go daemon.RunForever()
-				fmt.Fprintf(os.Stderr, "Daemon started.\n")
-				daemon.LogError("Daemon started.")
-			}
+	if daemon, err := GetDaemon(config, flags); err == nil {
+		if once {
+			daemon.Run()
+			fmt.Fprintf(os.Stderr, "Daemon pass completed.\n")
+			daemon.LogError("Daemon pass completed.")
 		} else {
-			fmt.Fprintf(os.Stderr, "Failed to create daemon: %v", err)
+			go daemon.RunForever()
+			fmt.Fprintf(os.Stderr, "Daemon started.\n")
+			daemon.LogError("Daemon started.")
 		}
-	}
-
-	if len(daemons) > 0 {
 		if flags.Lookup("d").Value.(flag.Getter).Get() == true {
 			ShutdownStdio()
 		}
 		c := make(chan os.Signal, 1)
 		signal.Notify(c, syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT)
 		<-c
+	} else {
+		fmt.Fprintf(os.Stderr, "Failed to create daemon: %v", err)
 	}
+
 }

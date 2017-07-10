@@ -156,7 +156,8 @@ func main() {
 	runFlags.Bool("once", false, "Run one pass of andrewd")
 	runFlags.String("c", getConfig(), "Config file to use")
 	runFlags.Bool("v", false, "Send all log messages to the console (if -d is not specified)")
-	runFlags.String("p", "", "The name of the storage policy to use")
+	runFlags.String("p", "", "The name of the storage policy to use for dispersion-populate")
+	runFlags.Bool("full", false, "Used with -once. will run a full dispersion pass (all policies- takes a while)")
 	runFlags.Usage = func() {
 		fmt.Fprintf(os.Stderr, "andrewd run [ARGS]\n")
 		runFlags.PrintDefaults()
@@ -169,7 +170,8 @@ func main() {
 		fmt.Fprintf(os.Stderr, "             restart: stop then restart daemon\n")
 		fmt.Fprintf(os.Stderr, "             version: prints the version\n")
 		fmt.Fprintf(os.Stderr, "                 run: run andrewd (attached)\n")
-		fmt.Fprintf(os.Stderr, " populate-dispersion: populate 100%% dispersion objects in .dispersion/objs/ (takes a while)\n")
+		fmt.Fprintf(os.Stderr, " dispersion-populate: populate 100%% dispersion objects in .dispersion/objs/ (takes a while)\n")
+		fmt.Fprintf(os.Stderr, " dispersion-report: show results of last full dispersion pass\n")
 		fmt.Fprintf(os.Stderr, "\n")
 		runFlags.Usage()
 		fmt.Fprintf(os.Stderr, "\n")
@@ -190,10 +192,22 @@ func main() {
 		ProcessControlCommand(RestartDaemon)
 	case "run":
 		runFlags.Parse(flag.Args()[1:])
-		andrewd.RunDaemon(andrewd.GetBirdCatcher, runFlags)
-	case "populate-dispersion":
+		andrewd.RunDaemon(andrewd.GetBirdCatcherDaemon, runFlags)
+	case "dispersion-report":
 		runFlags.Parse(flag.Args()[1:])
-		fmt.Println("Starting to put objects")
+		configFile := runFlags.Lookup("c").Value.(flag.Getter).Get().(string)
+		config, err := conf.LoadConfig(configFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error finding configs: %v\n", err)
+			return
+		}
+		bc, err := andrewd.GetBirdCatcher(config, runFlags)
+		if err != nil {
+			fmt.Println("Error getting birdcatcher: ", err)
+		}
+		bc.PrintLastDispersionReport()
+	case "dispersion-populate":
+		runFlags.Parse(flag.Args()[1:])
 		pdc, err := client.NewProxyDirectClient(nil)
 		if err != nil {
 			fmt.Println(fmt.Sprintf("Could not make client: %v", err))
