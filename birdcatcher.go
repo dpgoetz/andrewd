@@ -852,15 +852,16 @@ func (bc *BirdCatcher) LogInfo(format string, args ...interface{}) {
 	bc.logger.Info(fmt.Sprintf(format, args...))
 }
 
-func (bc *BirdCatcher) dispersionMonitor(timer <-chan time.Time) {
-	select {
-	case <-bc.partitionProcessed:
-		bc.lastPartProcessed = time.Now()
-	case <-timer:
-		fmt.Println("timer is running- check for dead")
-		bc.checkDispersionRunner()
+func (bc *BirdCatcher) dispersionMonitor(ticker <-chan time.Time) {
+	for {
+		select {
+		case <-bc.partitionProcessed:
+			bc.lastPartProcessed = time.Now()
+		case <-ticker:
+			fmt.Println("timer is running- check for dead")
+			bc.checkDispersionRunner()
+		}
 	}
-
 }
 
 func (bc *BirdCatcher) checkDispersionRunner() {
@@ -877,12 +878,9 @@ func (bc *BirdCatcher) checkDispersionRunner() {
 }
 
 func (bc *BirdCatcher) runDispersionForever() {
-	timer := time.NewTimer(30 * time.Second) //time.Hour)
 	bc.checkDispersionRunner()
 	fmt.Println("run mon")
-	for {
-		bc.dispersionMonitor(timer.C)
-	}
+	bc.dispersionMonitor(time.NewTicker(time.Second * 30).C)
 }
 
 func (bc *BirdCatcher) Run() {
@@ -897,8 +895,6 @@ func (bc *BirdCatcher) Run() {
 		msg = fmt.Sprintf("Error: %v", err)
 	}
 	bc.logRun(err == nil, msg)
-	bc.db.Close()
-	bc.db = nil
 
 	if bc.onceFullDispersion {
 		dummyCanceler := make(chan struct{})
@@ -941,7 +937,7 @@ func GetBirdCatcher(serverconf conf.Config, flags *flag.FlagSet) (*BirdCatcher, 
 		panic("Invalid Config, no report_dir")
 	}
 	maxAge := time.Duration(serverconf.GetInt("andrewd", "max_age_sec", int64(common.ONE_WEEK*time.Second)))
-	maxWeightChange := serverconf.GetFloat("andrewd", "max_weight_change", 0.005)
+	maxWeightChange := serverconf.GetFloat("andrewd", "max_weight_change", 0.005) // TODO make this min 1 drive out of ring up to 1%
 	ringBuilder := serverconf.GetDefault("andrewd", "ring_builder", "/etc/swift/object.builder")
 	ringUpdateFreq := serverconf.GetInt("andrewd", "ring_update_frequency", 259200)
 	runFreq := serverconf.GetInt("andrewd", "run_frequency", 3600)
