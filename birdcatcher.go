@@ -43,14 +43,19 @@ import (
 const ONE_DAY = 86400
 const SLEEP_TIME = 1 * time.Millisecond //100 * time.Millisecond
 
+type ringData struct {
+	r           ring.Ring
+	p           conf.Policy
+	builderPath string
+}
+
 type BirdCatcher struct {
-	oring              ring.Ring
+	policyToRing       map[int]*ringData
 	logger             LowLevelLogger
 	workingDir         string
 	reportDir          string
 	maxAge             time.Duration
 	maxWeightChange    float64
-	ringBuilder        string
 	ringUpdateFreq     time.Duration
 	runFreq            time.Duration
 	db                 *sql.DB
@@ -92,6 +97,11 @@ type ipPort struct {
 	ip   string
 	port int
 	up   bool
+}
+
+type probObj struct {
+	part       int
+	nodesFound int
 }
 
 var DbName = "birdcatcher.db"
@@ -169,9 +179,9 @@ func (bc *BirdCatcher) reconGetUnmounted(ip string, port int,
 	}
 }
 
-func (bc *BirdCatcher) deviceId(ip string, port int, device string) string {
+func (bc *BirdCatcher) deviceId(policy int, ip string, port int, device string) string {
 	// replace this with hbird FullName when it ghets merged
-	return fmt.Sprintf("%s:%d/%s", ip, port, device)
+	return fmt.Sprintf("%d:%s:%d/%s", policy, ip, port, device)
 }
 
 func (bc *BirdCatcher) serverId(ip string, port int) string {
@@ -222,6 +232,7 @@ func (bc *BirdCatcher) getDbAndLock() (*sql.DB, error) {
 	sqlCreate := `
 		CREATE TABLE IF NOT EXISTS device ( 
 			id INTEGER PRIMARY KEY,
+			policy INTEGER NOT NULL,
 			ip VARCHAR(40) NOT NULL,  
 			port INTEGER NOT NULL,
 			device VARCHAR(40) NOT NULL,  
@@ -244,6 +255,7 @@ func (bc *BirdCatcher) getDbAndLock() (*sql.DB, error) {
 
 		CREATE TABLE IF NOT EXISTS ring_action ( 
 			id INTEGER PRIMARY KEY,
+			policy INTEGER NOT NULL,
 			ip VARCHAR(40) NOT NULL,  
 			port INTEGER NOT NULL,
 			device VARCHAR(40) NOT NULL,  
@@ -274,7 +286,7 @@ func (bc *BirdCatcher) getDbAndLock() (*sql.DB, error) {
 		CREATE TABLE IF NOT EXISTS dispersion_report ( 
 			id INTEGER PRIMARY KEY,
 			create_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-			policy VARCHAR(40) NOT NULL,
+			policy INTEGER NOT NULL,
 			objects INTEGER NOT NULL,
 			objects_found INTEGER NOT NULL,
 			report_text TEXT
@@ -283,8 +295,9 @@ func (bc *BirdCatcher) getDbAndLock() (*sql.DB, error) {
 		CREATE TABLE IF NOT EXISTS dispersion_report_detail ( 
 			id INTEGER PRIMARY KEY,
 			dispersion_report_id INTEGER NOT NULL,
-			policy VARCHAR(40) NOT NULL,
-			partition_object_name INTEGER NOT NULL,
+			policy INTEGER NOT NULL,
+			partition INTEGER NOT NULL,
+			partition_object_path VARCHAR(100) NOT NULL,
 			objects_found INTEGER NOT NULL,
 			objects_need INTEGER NOT NULL,
 			create_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -301,11 +314,11 @@ func (bc *BirdCatcher) getDbAndLock() (*sql.DB, error) {
 	return bc.db, nil
 }
 
-func (bc *BirdCatcher) getRingData() (map[string]ring.Device, []ipPort) {
+func (bc *BirdCatcher) getRingData(oring *ring.Ring) (map[string]ring.Device, []ipPort) {
 	allRingDevices := make(map[string]ring.Device)
 	var allWeightedServers []ipPort
 	weightedServers := make(map[string]bool)
-	for _, dev := range bc.oring.AllDevices() {
+	for _, dev := range oring.AllDevices() {
 		if dev.Ip == "" {
 			continue
 		}
@@ -348,8 +361,8 @@ func (bc *BirdCatcher) needRingUpdate() bool {
 	return false
 }
 
-func (bc *BirdCatcher) updateDb() error {
-	allRingDevices, allWeightedServers := bc.getRingData()
+func (bc *BirdCatcher) updateDb(rd *ringData) error {
+	allRingDevices, allWeightedServers := bc.getRingData(rd.r)
 	unmountedDevices := make(map[string]bool)
 
 	reconDevices, downServers := bc.gatherReconData(allWeightedServers)
@@ -369,7 +382,8 @@ func (bc *BirdCatcher) updateDb() error {
 		return err
 	}
 	defer tx.Rollback()
-	rows, _ := tx.Query("SELECT ip, port, device, weight, mounted FROM device")
+	rows, _ := tx.Query(
+		"SELECT ip, port, device, weight, mounted FROM device WHERE policy = ?", rd.p.Index)
 	defer rows.Close()
 	var qryErrors []error
 	for rows.Next() {
@@ -382,7 +396,7 @@ func (bc *BirdCatcher) updateDb() error {
 			qryErrors = append(qryErrors, err)
 		} else {
 
-			dKey := bc.deviceId(ip, port, device)
+			dKey := bc.deviceId(rd.p.Index, ip, port, device)
 			rDev, inRing := allRingDevices[dKey]
 			_, inUnmounted := unmountedDevices[dKey]
 			_, notReachable := downServers[bc.serverId(ip, port)]
@@ -406,12 +420,12 @@ func (bc *BirdCatcher) updateDb() error {
 			"WHERE ip=? AND port=?", ipp.ip, ipp.port)
 	}
 	for _, rDev := range allRingDevices {
-		dKey := bc.deviceId(rDev.Ip, rDev.Port, rDev.Device)
+		dKey := bc.deviceId(rd.p.Index, rDev.Ip, rDev.Port, rDev.Device)
 		_, isUnmounted := unmountedDevices[dKey]
 		_, notReachable := downServers[bc.serverId(rDev.Ip, rDev.Port)]
-		_, err = tx.Exec("INSERT INTO device (ip, port, device, in_ring, weight, mounted, reachable) "+
-			"VALUES (?,?,?,?,?,?,?)",
-			rDev.Ip, rDev.Port, rDev.Device, true, rDev.Weight, !isUnmounted, !notReachable)
+		_, err = tx.Exec("INSERT INTO device (policy, ip, port, device, in_ring, weight, mounted, reachable) "+
+			"VALUES (?,?,?,?,?,?,?,?)",
+			rd.p.Index, rDev.Ip, rDev.Port, rDev.Device, true, rDev.Weight, !isUnmounted, !notReachable)
 	}
 	if err = tx.Commit(); err != nil {
 		return err
@@ -674,17 +688,64 @@ func (bc *BirdCatcher) PrintLastDispersionReport() {
 				policy, createDate.Format(time.UnixDate)))
 			fmt.Print(report)
 			fmt.Println("-----------------------------------------------------")
+			// TODO: query to see if there are any objects missing all copies
 		} else {
 			fmt.Println("Error query data:", err)
 		}
 	}
 }
 
-func (bc *BirdCatcher) makeDispersionReport(policy string, replicas uint64, goodPartitions int, objsNeed int, objsFound int, probObjects map[string]int) {
+func (bc *BirdCatcher) rescueLonelyPartitions() {
+	// will look at last dispersion report- if there are any partitions with only 1 copy available copy partition to a handoff
+
+	db, err := bc.getDbAndLock()
+	defer bc.dbl.Unlock()
+	if err != nil {
+		return
+	}
+	rows, err := db.Query(`
+	SELECT d.id FROM
+	(SELECT policy, MAX(create_date) mcd FROM dispersion_report GROUP BY policy) r
+	INNER JOIN dispersion_report d
+	ON d.policy = r.policy AND d.create_date = r.mcd`)
+	defer rows.Close()
+	if err != nil {
+		bc.logger.Err(fmt.Sprintf("ERROR: SELECT for dispersion_report: %v", err))
+		return
+	}
+	policyToRing := map[int]*ring.Ring{}
+
+	for rows.Next() {
+		var reportID int
+		if err := rows.Scan(&reportID); err == nil {
+
+		} else {
+			fmt.Println("Error rescue query data:", err)
+		}
+
+	}
+	for polID, ring := range policyToRing {
+		dRows := db.Query(`
+		  SELECT policy, partition FROM 
+		  dispersion_report_detail WHERE
+		  dispersion_report_id = ? AND
+		  objects_need > 1 AND
+		  objects_found = 1
+		  `, reportID)
+		for dRows.Next() {
+			var part int
+			if err := dRows.Scan(&part); err == nil {
+
+			}
+		}
+	}
+}
+
+func (bc *BirdCatcher) makeDispersionReport(policy int64, replicas uint64, goodPartitions int, objsNeed int, objsFound int, probObjects map[string]probObj) {
 
 	objMap := map[int]int{}
-	for _, cnt := range probObjects {
-		objMap[cnt] = objMap[cnt] + 1
+	for _, po := range probObjects {
+		objMap[po.nodesFound] = objMap[po.nodesFound] + 1
 	}
 	objText := []struct {
 		text string
@@ -697,7 +758,7 @@ func (bc *BirdCatcher) makeDispersionReport(policy string, replicas uint64, good
 		}{fmt.Sprintf("There were %d partitions missing %d copies.\n", cnt, pMissing), pMissing})
 	}
 	sort.Slice(objText, func(i, j int) bool { return objText[i].cnt < objText[j].cnt })
-	report := fmt.Sprintf("Using storage policy %s\nThere were %d partitions missing 0 copies.\n", policy, goodPartitions)
+	report := fmt.Sprintf("Using storage policy %d\nThere were %d partitions missing 0 copies.\n", policy, goodPartitions)
 	for _, t := range objText {
 		report += t.text
 	}
@@ -723,12 +784,12 @@ func (bc *BirdCatcher) makeDispersionReport(policy string, replicas uint64, good
 		return
 	}
 	rID, _ := r.LastInsertId()
-	recDetail, err := tx.Prepare("INSERT INTO dispersion_report_detail (dispersion_report_id, policy, partition_object_name, objects_found, objects_need) VALUES (?,?,?,?,?)")
+	recDetail, err := tx.Prepare("INSERT INTO dispersion_report_detail (dispersion_report_id, policy, partition, partition_object_path, objects_found, objects_need) VALUES (?,?,?,?,?)")
 	if err != nil {
 		return
 	}
-	for o, cnt := range probObjects {
-		if _, err := recDetail.Exec(rID, policy, o, cnt, replicas); err != nil {
+	for o, po := range probObjects {
+		if _, err := recDetail.Exec(rID, policy, po.part, o, po.nodesFound, replicas); err != nil {
 			fmt.Println("lalala: ", err)
 			return
 		}
@@ -759,7 +820,7 @@ func (bc *BirdCatcher) scanDispersion(cancelChan chan struct{}) {
 
 	for _, cr := range cRecords {
 		var objRing ring.Ring
-		probObjs := map[string]int{}
+		probObjs := map[string]probObj{}
 		objsNeed := 0
 		objsFound := 0
 		goodPartitions := 0
@@ -767,7 +828,12 @@ func (bc *BirdCatcher) scanDispersion(cancelChan chan struct{}) {
 		if len(contArr) != 3 {
 			continue
 		}
-		policy := contArr[2]
+		policy, err := strconv.ParseInt(contArr[2], 10, 64)
+		if err != nil {
+			bc.logDispersionError(
+				fmt.Sprintf("error parsing policy index: %v", err))
+			return
+		}
 		objRing, resp = c.ObjectRingFor(Account, cr.Name)
 		if resp != nil {
 			bc.logDispersionError(
@@ -817,7 +883,7 @@ func (bc *BirdCatcher) scanDispersion(cancelChan chan struct{}) {
 					}
 				}
 				if len(nodes) != nodesFound {
-					probObjs[objRec.Name] = nodesFound
+					probObjs[fmt.Sprintf("%s/%s", cr.Name, objRec.Name)] = probObj{int(partition), nodesFound}
 				} else {
 					goodPartitions += 1
 				}
@@ -832,7 +898,8 @@ func (bc *BirdCatcher) scanDispersion(cancelChan chan struct{}) {
 			}
 		}
 		bc.makeDispersionReport(policy, objRing.ReplicaCount(), goodPartitions, objsNeed, objsFound, probObjs)
-		bc.LogInfo("Dispersion report written for policy: %s", policy)
+		bc.LogInfo("Dispersion report written for policy: %d", policy)
+		bc.rescueLonelyPartitions()
 
 	}
 }
@@ -884,17 +951,19 @@ func (bc *BirdCatcher) runDispersionForever() {
 }
 
 func (bc *BirdCatcher) Run() {
-	bc.LogInfo("AndrewD Starting Run")
-	err := bc.updateDb()
-	var msg string
-	if bc.needRingUpdate() {
-		msg, err = bc.updateRing()
+	for p, rd := range bc.policyToRing {
+		bc.LogInfo("AndrewD Starting Run on policy: %d", p)
+		err := bc.updateDb(rd)
+		var msg string
+		if bc.needRingUpdate() {
+			msg, err = bc.updateRing()
+		}
+		err = bc.produceReport()
+		if err != nil {
+			msg = fmt.Sprintf("Error: %v", err)
+		}
+		bc.logRun(err == nil, msg)
 	}
-	err = bc.produceReport()
-	if err != nil {
-		msg = fmt.Sprintf("Error: %v", err)
-	}
-	bc.logRun(err == nil, msg)
 
 	if bc.onceFullDispersion {
 		dummyCanceler := make(chan struct{})
@@ -938,7 +1007,7 @@ func GetBirdCatcher(serverconf conf.Config, flags *flag.FlagSet) (*BirdCatcher, 
 	}
 	maxAge := time.Duration(serverconf.GetInt("andrewd", "max_age_sec", int64(common.ONE_WEEK*time.Second)))
 	maxWeightChange := serverconf.GetFloat("andrewd", "max_weight_change", 0.005) // TODO make this min 1 drive out of ring up to 1%
-	ringBuilder := serverconf.GetDefault("andrewd", "ring_builder", "/etc/swift/object.builder")
+	ringLoc := serverconf.GetDefault("andrewd", "ring_builder", "/etc/swift/")
 	ringUpdateFreq := serverconf.GetInt("andrewd", "ring_update_frequency", 259200)
 	runFreq := serverconf.GetInt("andrewd", "run_frequency", 3600)
 	doNotRebalance := serverconf.GetBool("andrewd", "do_not_rebalance", false)
@@ -949,13 +1018,23 @@ func GetBirdCatcher(serverconf conf.Config, flags *flag.FlagSet) (*BirdCatcher, 
 	}
 	onceFullDispersion := flags.Lookup("full").Value.(flag.Getter).Get().(bool)
 
+	policyList = conf.LoadPolicies()
+	pMap := map[int]*ringData{}
+	for _, p := range policyList {
+		objectRing, err := ring.GetRing("object", hashPathPrefix, hashPathSuffix, p.Index)
+		if err != nil {
+			panic(fmt.Sprintf("Could not load ring with policy", p.Index))
+		}
+		bPath = fmt.Sprintf("%sobject-%d.builder", ringLoc, p.Index)
+		pMap[p.Index] = &ringData{objectRing, p, bPath}
+	}
+
 	bc := BirdCatcher{
-		oring:              objRing,
+		policyToRing:       pMap,
 		workingDir:         workingDir,
 		reportDir:          reportDir,
 		maxAge:             maxAge,
 		maxWeightChange:    maxWeightChange,
-		ringBuilder:        ringBuilder,
 		ringUpdateFreq:     time.Duration(ringUpdateFreq) * time.Second,
 		runFreq:            time.Duration(runFreq) * time.Second,
 		doNotRebalance:     doNotRebalance,

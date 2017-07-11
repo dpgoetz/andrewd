@@ -22,6 +22,7 @@ import (
 
 	"github.com/troubling/hummingbird/client"
 	"github.com/troubling/hummingbird/common"
+	"github.com/troubling/hummingbird/common/conf"
 	"github.com/troubling/hummingbird/common/ring"
 )
 
@@ -50,7 +51,7 @@ func getDispersionObjects(container string, oring ring.Ring, objNames chan strin
 	}
 }
 
-func PutDispersionObjects(hClient client.ProxyClient, policy string) bool {
+func PutDispersionObjects(hClient client.ProxyClient, policy *conf.Policy) bool {
 	resp := hClient.PutAccount(Account, common.Map2Headers(map[string]string{
 		"Content-Length": "0",
 		"Content-Type":   "text",
@@ -61,17 +62,12 @@ func PutDispersionObjects(hClient client.ProxyClient, policy string) bool {
 		return false
 	}
 	headers := map[string]string{
-		"Content-Length": "0",
-		"Content-Type":   "text",
-		"X-Timestamp":    fmt.Sprintf("%d", time.Now().Unix()),
+		"Content-Length":   "0",
+		"Content-Type":     "text",
+		"X-Timestamp":      fmt.Sprintf("%d", time.Now().Unix()),
+		"X-Storage-Policy": policy.Name,
 	}
-	if policy != "" {
-		headers["X-Storage-Policy"] = policy
-	}
-	container := "disp-objs-0"
-	if policy != "" {
-		container = "disp-objs-" + policy
-	}
+	container := fmt.Sprintf("disp-objs-%d", policy.Index)
 	resp = hClient.PutContainer(Account, container, common.Map2Headers(headers))
 	if resp.StatusCode/100 != 2 {
 		fmt.Println(fmt.Sprintf("Could not put container: %s %v", container, resp.StatusCode))
