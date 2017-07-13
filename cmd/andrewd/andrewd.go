@@ -213,13 +213,13 @@ func main() {
 			fmt.Println(fmt.Sprintf("Could not make client: %v", err))
 		}
 		policyName := runFlags.Lookup("p").Value.(flag.Getter).Get().(string)
-		policyList = conf.LoadPolicies()
+		policyList := conf.LoadPolicies()
 		policy := policyList.Default()
 		validName := false
 		if policyName != "" {
 			for _, p := range policyList {
 				if p.Name == policyName {
-					policy = p
+					policy = p.Index
 					validName = true
 					break
 				}
@@ -230,7 +230,7 @@ func main() {
 			return
 		}
 
-		andrewd.PutDispersionObjects(client.NewProxyClient(pdc, nil, nil), policy)
+		andrewd.PutDispersionObjects(client.NewProxyClient(pdc, nil, nil), policyList[policy])
 	default:
 		flag.Usage()
 	}
