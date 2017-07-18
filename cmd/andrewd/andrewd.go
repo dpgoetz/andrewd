@@ -172,6 +172,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "                 run: run andrewd (attached)\n")
 		fmt.Fprintf(os.Stderr, " dispersion-populate: populate 100%% dispersion objects in .dispersion/objs/ (takes a while)\n")
 		fmt.Fprintf(os.Stderr, " dispersion-report: show results of last full dispersion pass\n")
+		fmt.Fprintf(os.Stderr, " drive-report: show report ring actions (drives removed, rebalances, etc)\n")
 		fmt.Fprintf(os.Stderr, "\n")
 		runFlags.Usage()
 		fmt.Fprintf(os.Stderr, "\n")

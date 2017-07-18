@@ -108,14 +108,34 @@ type probObj struct {
 var DbName = "birdcatcher.db"
 var ReportName = "unmounted_report_%d.json"
 
-func rescueLonelyPartition(policy int64, partition uint64, goodNode *ring.Device, badNodes []*ring.Device, rescueDone chan struct{}) {
-	prjs := []*objectserver.PriorityRepJob{
-		{Partition: partition,
+func rescueLonelyPartition(policy int64, partition uint64, goodNode *ring.Device, toNodes []*ring.Device, moreNodes ring.MoreNodes, resultChan chan<- string) {
+	if len(toNodes) == 0 {
+		toNodes = append(toNodes, moreNodes.Next())
+	}
+	c := http.Client{Timeout: time.Hour}
+	tries := 1
+	for {
+		fmt.Println("sending rep job: ", goodNode)
+		fmt.Println("sending rep job tooo: ", toNodes)
+		res, success := objectserver.SendPriRepJob(&objectserver.PriorityRepJob{
+			Partition:  partition,
 			FromDevice: goodNode,
-			ToDevices:  badNodes,
-			Policy:     int(policy)}}
-	objectserver.DoPriRepJobs(prjs, 2, &http.Client{Timeout: time.Hour})
-	rescueDone <- struct{}{}
+			ToDevices:  toNodes,
+			Policy:     int(policy)}, &c)
+		fmt.Println("PriorityRepJob res: ", res)
+		if success {
+			resultChan <- res
+			return
+		} else {
+			nextNode := moreNodes.Next()
+			if nextNode == nil {
+				resultChan <- fmt.Sprintf("Rescue partition %d failed after %d tries. %s", partition, tries, res)
+				return
+			}
+			toNodes = []*ring.Device{nextNode}
+		}
+		tries += 1
+	}
 }
 
 func (bc *BirdCatcher) doHealthCheck(ip string, port int) (ok bool) {
@@ -244,9 +264,9 @@ func (bc *BirdCatcher) getDbAndLock() (*sql.DB, error) {
 		CREATE TABLE IF NOT EXISTS ring_action ( 
 			id INTEGER PRIMARY KEY,
 			policy INTEGER NOT NULL,
-			ip VARCHAR(40) NOT NULL,  
-			port INTEGER NOT NULL,
-			device VARCHAR(40) NOT NULL,  
+			ip VARCHAR(40),  
+			port INTEGER,
+			device VARCHAR(40),  
 			action VARCHAR(20) NOT NULL,
 			create_date TIMESTAMP NOT NULL
 		); 
@@ -536,6 +556,12 @@ func (bc *BirdCatcher) updateRing(rd ringData) (outputStr string, err error) {
 
 		}
 	}
+	_, err = tx.Exec("INSERT INTO ring_action "+
+		"(policy, action, create_date) "+
+		"VALUES (?,?,?)", policy, "REBALANCED", now)
+	if err != nil {
+		return "", err
+	}
 	if err = tx.Commit(); err != nil {
 		return "", err
 	}
@@ -653,11 +679,6 @@ func (bc *BirdCatcher) produceReport(rd ringData) error {
 	return ioutil.WriteFile(reportLoc, d, 0644)
 }
 
-func (bc *BirdCatcher) logDispersionError(text string) {
-	// make a dispersion_report with ^^ as text
-	return
-}
-
 func (bc *BirdCatcher) PrintLastDispersionReport() {
 	db, err := bc.getDbAndLock()
 	defer bc.dbl.Unlock()
@@ -693,19 +714,23 @@ func (bc *BirdCatcher) PrintLastDispersionReport() {
 
 func (bc *BirdCatcher) makeDispersionReport(policy int64, replicas uint64, goodPartitions int, objsNeed int, objsFound int, probObjects map[string]probObj) {
 
-	objMap := map[int]int{}
+	objMap := map[uint64]int{}
 	for _, po := range probObjects {
-		objMap[po.nodesFound] = objMap[po.nodesFound] + 1
+		//fmt.Println("probObj: %s", pa)
+		//fmt.Println("probObj: %s", objMap[po.nodesFound])
+		nodesMissing := replicas - uint64(po.nodesFound)
+		objMap[nodesMissing] = objMap[nodesMissing] + 1
 	}
 	objText := []struct {
 		text string
-		cnt  int
+		cnt  uint64
 	}{}
 	for pMissing, cnt := range objMap {
 		objText = append(objText, struct {
 			text string
-			cnt  int
+			cnt  uint64
 		}{fmt.Sprintf("There were %d partitions missing %d copies.\n", cnt, pMissing), pMissing})
+		fmt.Println(fmt.Sprintf("There were %d partitions missing %d copies.\n", cnt, pMissing))
 	}
 	sort.Slice(objText, func(i, j int) bool { return objText[i].cnt < objText[j].cnt })
 	report := fmt.Sprintf("Using storage policy %d\nThere were %d partitions missing 0 copies.\n", policy, goodPartitions)
@@ -734,8 +759,9 @@ func (bc *BirdCatcher) makeDispersionReport(policy int64, replicas uint64, goodP
 		return
 	}
 	rID, _ := r.LastInsertId()
-	recDetail, err := tx.Prepare("INSERT INTO dispersion_report_detail (dispersion_report_id, policy, partition, partition_object_path, objects_found, objects_need) VALUES (?,?,?,?,?)")
+	recDetail, err := tx.Prepare("INSERT INTO dispersion_report_detail (dispersion_report_id, policy, partition, partition_object_path, objects_found, objects_need) VALUES (?,?,?,?,?,?)")
 	if err != nil {
+		fmt.Println("moooo: %s", err)
 		return
 	}
 	for o, po := range probObjects {
@@ -755,21 +781,27 @@ func (bc *BirdCatcher) scanDispersion(cancelChan chan struct{}) {
 	bc.LogInfo("AndrewD Starting Dispersion Check")
 	pdc, err := client.NewProxyDirectClient(nil)
 	if err != nil {
-		bc.logDispersionError(fmt.Sprintf("Could not make client: %v", err))
+		bc.LogError(fmt.Sprintf("Could not make client: %v", err))
 		return
 	}
 	c := client.NewProxyClient(pdc, nil, nil)
+	fmt.Println("0000000")
 	resp := c.GetAccount(Account, map[string]string{"format": "json", "prefix": "disp-objs-"}, http.Header{})
+	fmt.Println("aaaaa: ", resp)
 	var cRecords []accountserver.ContainerListingRecord
 	err = json.NewDecoder(resp.Body).Decode(&cRecords)
+	fmt.Println("ccccc: ", err)
 	if err != nil {
-		bc.logDispersionError(fmt.Sprintf("Could not get container listing: %v", err))
+		bc.LogError(fmt.Sprintf("Could not get container listing: %v", err))
 		return
 	}
 	dirClient := http.Client{Timeout: 10 * time.Second}
 
-	rescueDone := make(chan struct{})
-	defer close(rescueDone)
+	if len(cRecords) == 0 {
+		bc.LogError("No dispersion containers found")
+		return
+	}
+	resultChan := make(chan string)
 	for _, cr := range cRecords {
 		var objRing ring.Ring
 		probObjs := map[string]probObj{}
@@ -783,13 +815,13 @@ func (bc *BirdCatcher) scanDispersion(cancelChan chan struct{}) {
 		}
 		policy, err := strconv.ParseInt(contArr[2], 10, 64)
 		if err != nil {
-			bc.logDispersionError(
+			bc.LogError(
 				fmt.Sprintf("error parsing policy index: %v", err))
 			return
 		}
 		objRing, resp = c.ObjectRingFor(Account, cr.Name)
 		if resp != nil {
-			bc.logDispersionError(
+			bc.LogError(
 				fmt.Sprintf("error getting obj ring for: %v", cr.Name))
 			return
 		}
@@ -804,7 +836,7 @@ func (bc *BirdCatcher) scanDispersion(cancelChan chan struct{}) {
 			resp := c.GetContainer(Account, cr.Name, map[string]string{"format": "json", "marker": marker}, http.Header{})
 			err = json.NewDecoder(resp.Body).Decode(&ors)
 			if err != nil {
-				bc.logDispersionError(fmt.Sprintf("error in container listing: %v", cr.Name))
+				bc.LogError(fmt.Sprintf("error in container listing: %v", cr.Name))
 				return
 			}
 			if len(ors) == 0 {
@@ -821,7 +853,7 @@ func (bc *BirdCatcher) scanDispersion(cancelChan chan struct{}) {
 				}
 				nodes := objRing.GetNodes(partition)
 				goodNodes := []*ring.Device{}
-				badNodes := []*ring.Device{}
+				notFoundNodes := []*ring.Device{}
 
 				for _, device := range nodes {
 					url := fmt.Sprintf("http://%s:%d/%s/%d/%s/%s/%s", device.Ip, device.Port, device.Device, partition,
@@ -832,8 +864,8 @@ func (bc *BirdCatcher) scanDispersion(cancelChan chan struct{}) {
 					//fmt.Println("got back: ", resp.StatusCode)
 					if err == nil && resp.StatusCode/100 == 2 {
 						goodNodes = append(goodNodes, device)
-					} else {
-						badNodes = append(badNodes, device)
+					} else if resp != nil && resp.StatusCode == 404 {
+						notFoundNodes = append(notFoundNodes, device)
 					}
 					if resp != nil {
 						resp.Body.Close()
@@ -845,8 +877,9 @@ func (bc *BirdCatcher) scanDispersion(cancelChan chan struct{}) {
 					goodPartitions += 1
 				}
 				if len(nodes) > 1 && len(goodNodes) == 1 {
-					go rescueLonelyPartition(policy, partition, goodNodes[0], badNodes, rescueDone)
 					numRescues += 1
+					go rescueLonelyPartition(policy, partition, goodNodes[0],
+						notFoundNodes, objRing.GetMoreNodes(partition), resultChan)
 				}
 				if len(goodNodes) == 0 {
 					bc.LogError("LOST Partition: %d", partition)
@@ -862,11 +895,11 @@ func (bc *BirdCatcher) scanDispersion(cancelChan chan struct{}) {
 			}
 		}
 		bc.makeDispersionReport(policy, objRing.ReplicaCount(), goodPartitions, objsNeed, objsFound, probObjs)
-		bc.LogInfo("Dispersion report written for policy: %d", policy)
+		bc.LogInfo("Dispersion report written for policy: %d. Rescuing %d partitions", policy, numRescues)
 		for i := 0; i < numRescues; i++ {
-			<-rescueDone
+			res := <-resultChan
+			bc.LogInfo(res)
 		}
-
 	}
 }
 
@@ -923,6 +956,9 @@ func (bc *BirdCatcher) Run() {
 		var msg string
 		if bc.needRingUpdate(rd) {
 			msg, err = bc.updateRing(rd)
+			if err != nil {
+				msg = fmt.Sprintf("update ring Error: %v", err)
+			}
 		}
 		err = bc.produceReport(rd)
 		if err != nil {
